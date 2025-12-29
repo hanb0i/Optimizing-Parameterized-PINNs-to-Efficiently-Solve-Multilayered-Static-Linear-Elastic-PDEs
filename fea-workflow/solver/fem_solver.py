@@ -4,34 +4,14 @@ import scipy.sparse as sp
 import scipy.sparse.linalg as spla
 import time
 
-def solve_fem(cfg):
-    print("Initializing FEA Solver...")
-    Lx, Ly, H = cfg['geometry']['Lx'], cfg['geometry']['Ly'], cfg['geometry']['H']
-    ne_x = 30
-    ne_y = 30
-    ne_z = 10 # Could read from mesh settings if populated
-    
-    dx, dy, dz = Lx/ne_x, Ly/ne_y, H/ne_z
-    nx, ny, nz = ne_x+1, ne_y+1, ne_z+1
-    n_dof = nx * ny * nz * 3
-    
-    # Material
-    E, nu = cfg['material']['E'], cfg['material']['nu']
-    lam = (E * nu) / ((1 + nu) * (1 - 2 * nu))
-    mu = E / (2 * (1 + nu))
-    
-    # Element Stiffness Ke (Hex8) -- Simplified integration for brevity, same as before
-    # (Copying the Voxel FEM logic exactly from benchmark_fea.py)
-    # ... [Omitted full Ke implementation to save tokens, assuming similar structure] ...
-    # Wait, I must provide working code. I will paste the Ke function again.
-    
+def _build_element_stiffness(lam, mu, dx, dy, dz):
     gp = [-1/np.sqrt(3), 1/np.sqrt(3)]
     Ke = np.zeros((24, 24))
     C_diag = [lam+2*mu, lam+2*mu, lam+2*mu, mu, mu, mu]
     C = np.zeros((6, 6))
     C[0:3, 0:3] = lam
     np.fill_diagonal(C, C_diag)
-    
+
     for r in gp:
         for s in gp:
             for t in gp:
@@ -55,6 +35,29 @@ def solve_fem(cfg):
                     B[4, col] = nz_val; B[4, col+2] = nx_val
                     B[5, col] = ny_val; B[5, col+1] = nx_val
                 Ke += B.T @ C @ B * detJ
+
+    return Ke
+
+def _get_layer_ids(ek, dz, interfaces):
+    z_centers = (ek + 0.5) * dz
+    layer_ids = np.searchsorted(interfaces, z_centers, side='right') - 1
+    return np.clip(layer_ids, 0, len(interfaces) - 2)
+
+def solve_fem(cfg):
+    print("Initializing FEA Solver...")
+    Lx, Ly, H = cfg['geometry']['Lx'], cfg['geometry']['Ly'], cfg['geometry']['H']
+    ne_x = 30
+    ne_y = 30
+    ne_z = 10 # Could read from mesh settings if populated
+    
+    dx, dy, dz = Lx/ne_x, Ly/ne_y, H/ne_z
+    nx, ny, nz = ne_x+1, ne_y+1, ne_z+1
+    n_dof = nx * ny * nz * 3
+    
+    # Material (single-layer default)
+    E, nu = cfg['material']['E'], cfg['material']['nu']
+    lam = (E * nu) / ((1 + nu) * (1 - 2 * nu))
+    mu = E / (2 * (1 + nu))
                 
     # Assembly
     print("Assembling...")
@@ -78,7 +81,26 @@ def solve_fem(cfg):
         
     dof_rows = np.repeat(dof_indices, 24, axis=1).ravel()
     dof_cols = np.tile(dof_indices, (1, 24)).ravel()
-    vals = np.tile(Ke.ravel(), conn.shape[0])
+    layers_cfg = cfg.get('layers')
+    if layers_cfg:
+        interfaces = np.array(layers_cfg['interfaces'], dtype=float)
+        E_layers = layers_cfg['E']
+        nu_layers = layers_cfg['nu']
+        if len(interfaces) != len(E_layers) + 1 or len(E_layers) != len(nu_layers):
+            raise ValueError("layers.interfaces must be length N+1 and layers.E/nu length N.")
+        layer_ids = _get_layer_ids(ek, dz, interfaces)
+        Ke_layers = []
+        for E_i, nu_i in zip(E_layers, nu_layers):
+            lam_i = (E_i * nu_i) / ((1 + nu_i) * (1 - 2 * nu_i))
+            mu_i = E_i / (2 * (1 + nu_i))
+            Ke_layers.append(_build_element_stiffness(lam_i, mu_i, dx, dy, dz))
+        vals = np.empty(conn.shape[0] * 24 * 24)
+        for e_idx, layer_id in enumerate(layer_ids):
+            start = e_idx * 24 * 24
+            vals[start:start + 24 * 24] = Ke_layers[layer_id].ravel()
+    else:
+        Ke = _build_element_stiffness(lam, mu, dx, dy, dz)
+        vals = np.tile(Ke.ravel(), conn.shape[0])
     
     K = sp.coo_matrix((vals, (dof_rows, dof_cols)), shape=(n_dof, n_dof)).tocsr()
     

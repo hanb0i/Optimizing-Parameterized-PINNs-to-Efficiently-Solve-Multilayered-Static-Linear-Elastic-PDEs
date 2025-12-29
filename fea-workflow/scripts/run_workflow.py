@@ -37,6 +37,11 @@ def get_cfg_from_pinn_config():
             'E': pinn_config.E_vals[0], 
             'nu': pinn_config.nu_vals[0]
         },
+        'layers': {
+            'interfaces': pinn_config.Layer_Interfaces,
+            'E': pinn_config.E_vals,
+            'nu': pinn_config.nu_vals
+        },
     }
 
 def main():
