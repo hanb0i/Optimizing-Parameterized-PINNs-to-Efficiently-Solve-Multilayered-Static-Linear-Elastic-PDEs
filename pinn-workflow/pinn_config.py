@@ -47,4 +47,3 @@ N_BOUNDARY = 500  # Per face type
 FOURIER_DIM = 64 # Number of Fourier frequencies
 FOURIER_SCALE = 1.0 # Standard deviation for frequency sampling
 OUTPUT_SCALE = 100.0 # Scale up output as requested
-```
