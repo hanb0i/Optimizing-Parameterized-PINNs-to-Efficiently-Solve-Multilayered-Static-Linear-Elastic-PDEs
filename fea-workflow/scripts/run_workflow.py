@@ -88,7 +88,7 @@ def main():
     pts_top = np.stack([X_fea.ravel(), Y_fea.ravel(), np.ones_like(X_fea.ravel())*cfg['geometry']['H']], axis=1)
     pts_top_t = torch.tensor(pts_top, dtype=torch.float32).to(device)
     with torch.no_grad():
-        u_pinn = (pinn_model(pts_top_t, 2) * 100.0).cpu().numpy()
+        u_pinn = pinn_model(pts_top_t, 2).cpu().numpy()
         uz_pinn_top = u_pinn[:, 2].reshape(X_fea.shape)
     diff = np.abs(uz_fea_top - uz_pinn_top)
     denom = np.maximum(np.abs(uz_fea_top), 1e-8)
