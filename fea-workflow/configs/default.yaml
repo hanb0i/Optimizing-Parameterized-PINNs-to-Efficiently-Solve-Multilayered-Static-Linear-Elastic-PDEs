@@ -8,11 +8,16 @@ load_patch:
   x_end: 0.67
   y_start: 0.33
   y_end: 0.67
-  pressure: 1.0
+  pressure: 0.1
 
 material:
   E: 1.0
   nu: 0.3
+
+layers:
+  interfaces: [0.0, 0.0333333333, 0.0666666667, 0.1]
+  E: [1.0, 1.0, 1.0]
+  nu: [0.3, 0.3, 0.3]
 
 mesh:
   elements_through_thickness: 6
