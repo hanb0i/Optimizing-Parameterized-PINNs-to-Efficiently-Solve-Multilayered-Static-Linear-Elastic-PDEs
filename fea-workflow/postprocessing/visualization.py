@@ -46,7 +46,7 @@ def plot_pinn_results(model, config, device, save_path="."):
     
     with torch.no_grad():
         u = model(pts_t, 2) # Layer 3
-        u_z = (u[:, 2] * 100.0).cpu().numpy().reshape(X.shape)
+        u_z = u[:, 2].cpu().numpy().reshape(X.shape)
         
     plt.figure(figsize=(8, 6))
     plt.contourf(X, Y, u_z, levels=50, cmap='jet')
@@ -71,7 +71,7 @@ def plot_comparison(u_fea, params_fea, pinn_model, config, device, save_path="."
     
     pinn_model.eval()
     with torch.no_grad():
-        u_pinn = (pinn_model(pts_top_t, 2) * 100.0).cpu().numpy()
+        u_pinn = pinn_model(pts_top_t, 2).cpu().numpy()
         uz_pinn_top = u_pinn[:, 2].reshape(nx, ny)
         
     # Plot

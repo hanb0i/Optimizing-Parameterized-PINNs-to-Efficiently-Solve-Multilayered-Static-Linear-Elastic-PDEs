@@ -34,7 +34,7 @@ LEARNING_RATE = 1e-3
 EPOCHS_ADAM = 500 # Optimal balance (Knee point at ~200-500)
 EPOCHS_LBFGS = 1000 # Increased from 500
 WEIGHTS = {
-    'pde': 10.0,    # Increased from 1.0
+    'pde': 5.0,    # Increased from 1.0
     'bc': 1.0,      # Reduced, as hard constraint handles side BCs now
     'load': 1000.0, # Heavily increased from 100.0 to drive deformation
     'interface_u': 100.0 
@@ -46,4 +46,3 @@ N_BOUNDARY = 500  # Per face type
 # Fourier Features
 FOURIER_DIM = 64 # Number of Fourier frequencies
 FOURIER_SCALE = 1.0 # Standard deviation for frequency sampling
-OUTPUT_SCALE = 100.0 # Scale up output as requested
