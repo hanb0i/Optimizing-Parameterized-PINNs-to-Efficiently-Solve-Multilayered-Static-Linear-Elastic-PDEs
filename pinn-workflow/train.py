@@ -30,11 +30,53 @@ def train():
     # Learning rate scheduler: reduce by 0.3 every epochs_adam//5 steps
     scheduler = optim.lr_scheduler.StepLR(optimizer_adam, step_size=config.EPOCHS_ADAM//5, gamma=0.3)
     
+    # Load FEM data for comparison
+    print("Loading FEM solution for comparison...")
+    try:
+        fem_data = np.load("fea_solution.npy", allow_pickle=True).item()
+        X_fea = fem_data['x']
+        Y_fea = fem_data['y']
+        Z_fea = fem_data['z']
+        U_fea = fem_data['u']
+        
+        # Prepare FEM evaluation grid
+        pts_fea = np.stack([X_fea.ravel(), Y_fea.ravel(), Z_fea.ravel()], axis=1)
+        pts_fea_tensor = torch.tensor(pts_fea, dtype=torch.float32).to(device)
+        u_fea_flat = U_fea.reshape(-1, 3)
+        
+        fem_available = True
+        print(f"FEM data loaded: {X_fea.shape}")
+    except FileNotFoundError:
+        print("FEM solution not found. Training without FEM comparison.")
+        fem_available = False
+    
     # Data Container
     training_data = data.get_data()
     
-    # History
-    loss_history = []
+    # History - store all loss components separately for each optimizer
+    adam_history = {
+        'total': [],
+        'pde': [],
+        'bc_sides': [],
+        'free_top': [],
+        'free_bot': [],
+        'load': [],
+        'fem_mae': [],
+        'fem_max_err': [],
+        'epochs': []
+    }
+    
+    lbfgs_history = {
+        'total': [],
+        'pde': [],
+        'bc_sides': [],
+        'free_top': [],
+        'free_bot': [],
+        'load': [],
+        'fem_mae': [],
+        'fem_max_err': [],
+        'steps': []
+    }
     
     print("Starting Adam Training...")
     start_time = time.time()
@@ -43,26 +85,52 @@ def train():
     for epoch in range(config.EPOCHS_ADAM):
         optimizer_adam.zero_grad()
         
-        # Periodic data refresh (optional, computationally expensive to re-sample every Step)
+        # Periodic data refresh with residual-based adaptive sampling
         if epoch % 500 == 0 and epoch > 0:
-            training_data = data.get_data()
+            # Compute residuals for adaptive sampling
+            residuals = physics.compute_residuals(pinn, training_data, device)
+            training_data = data.get_data(prev_data=training_data, residuals=residuals)
+            print(f"  Resampled with residual-based adaptive sampling at epoch {epoch}")
             
         loss_val, losses = physics.compute_loss(pinn, training_data, device)
         loss_val.backward()
         optimizer_adam.step()
         scheduler.step()  # Update learning rate
         
-        loss_history.append(loss_val.item())
+        adam_history['total'].append(loss_val.item())
+        adam_history['pde'].append(losses['pde'].item())
+        adam_history['bc_sides'].append(losses['bc_sides'].item())
+        adam_history['free_top'].append(losses['free_top'].item())
+        adam_history['free_bot'].append(losses['free_bot'].item())
+        adam_history['load'].append(losses['load'].item())
         
         if epoch % 100 == 0:
             current_time = time.time()
             step_duration = current_time - last_time
             last_time = current_time
             current_lr = scheduler.get_last_lr()[0]
-            print(f"Epoch {epoch}: Total Loss: {loss_val.item():.6f} | "
-                  f"PDE: {losses['pde']:.6f} | BC_sides: {losses['bc_sides']:.6f} | "
-                  f"Free_top: {losses['free_top']:.6f} | Free_bot: {losses['free_bot']:.6f} | "
-                  f"Load: {losses['load']:.6f} | LR: {current_lr:.2e} | Time: {step_duration:.4f}s")
+            
+            # Compute FEM error every 100 epochs
+            if fem_available:
+                with torch.no_grad():
+                    u_pinn_flat = pinn(pts_fea_tensor, 0).cpu().numpy()
+                    diff = np.abs(u_pinn_flat - u_fea_flat)
+                    mae = np.mean(diff)
+                    max_err = np.max(diff)
+                    adam_history['fem_mae'].append(mae)
+                    adam_history['fem_max_err'].append(max_err)
+                    adam_history['epochs'].append(epoch)
+                    
+                print(f"Epoch {epoch}: Total Loss: {loss_val.item():.6f} | "
+                      f"PDE: {losses['pde']:.6f} | BC_sides: {losses['bc_sides']:.6f} | "
+                      f"Free_top: {losses['free_top']:.6f} | Free_bot: {losses['free_bot']:.6f} | "
+                      f"Load: {losses['load']:.6f} | LR: {current_lr:.2e} | "
+                      f"FEM MAE: {mae:.6f} | Time: {step_duration:.4f}s")
+            else:
+                print(f"Epoch {epoch}: Total Loss: {loss_val.item():.6f} | "
+                      f"PDE: {losses['pde']:.6f} | BC_sides: {losses['bc_sides']:.6f} | "
+                      f"Free_top: {losses['free_top']:.6f} | Free_bot: {losses['free_bot']:.6f} | "
+                      f"Load: {losses['load']:.6f} | LR: {current_lr:.2e} | Time: {step_duration:.4f}s")
             
     print(f"Adam Training Complete. Total Time: {time.time() - start_time:.2f}s")
     
@@ -77,26 +145,47 @@ def train():
     print(f"Running {num_lbfgs_steps} L-BFGS outer steps.")
     
     for i in range(num_lbfgs_steps):
-        # Resample collocation points for each L-BFGS step
-        training_data = data.get_data()
+        # Resample collocation points with residual-based adaptive sampling
+        residuals = physics.compute_residuals(pinn, training_data, device)
+        training_data = data.get_data(prev_data=training_data, residuals=residuals)
         
         def closure():
             optimizer_lbfgs.zero_grad()
-            loss_val, _ = physics.compute_loss(pinn, training_data, device)
+            loss_val, losses = physics.compute_loss(pinn, training_data, device)
             loss_val.backward()
             return loss_val
         
         step_start = time.time()
         loss_val = optimizer_lbfgs.step(closure)
         step_end = time.time()
-        loss_history.append(loss_val.item())
         
-        # Print every step to see progress
-        print(f"L-BFGS Step {i}: Loss: {loss_val.item():.6f} | Time: {step_end - step_start:.4f}s")
+        # Compute losses for logging
+        _, losses = physics.compute_loss(pinn, training_data, device)
+        lbfgs_history['total'].append(loss_val.item())
+        lbfgs_history['pde'].append(losses['pde'].item())
+        lbfgs_history['bc_sides'].append(losses['bc_sides'].item())
+        lbfgs_history['free_top'].append(losses['free_top'].item())
+        lbfgs_history['free_bot'].append(losses['free_bot'].item())
+        lbfgs_history['load'].append(losses['load'].item())
+        
+        # Compute FEM error
+        if fem_available:
+            with torch.no_grad():
+                u_pinn_flat = pinn(pts_fea_tensor, 0).cpu().numpy()
+                diff = np.abs(u_pinn_flat - u_fea_flat)
+                mae = np.mean(diff)
+                max_err = np.max(diff)
+                lbfgs_history['fem_mae'].append(mae)
+                lbfgs_history['fem_max_err'].append(max_err)
+                lbfgs_history['steps'].append(i)
+            print(f"L-BFGS Step {i}: Loss: {loss_val.item():.6f} | FEM MAE: {mae:.6f} | Time: {step_end - step_start:.4f}s")
+        else:
+            print(f"L-BFGS Step {i}: Loss: {loss_val.item():.6f} | Time: {step_end - step_start:.4f}s")
             
-    # Save Model
+    # Save Model and Loss Histories
     torch.save(pinn.state_dict(), "pinn_model.pth")
-    np.save("loss_history.npy", np.array(loss_history))
+    loss_history = {'adam': adam_history, 'lbfgs': lbfgs_history}
+    np.save("loss_history.npy", loss_history)
     print("Model saved.")
     return pinn
 

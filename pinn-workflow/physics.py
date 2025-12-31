@@ -150,3 +150,66 @@ def compute_loss(model, data, device):
     
     losses['total'] = total_loss
     return total_loss, losses
+
+def compute_residuals(model, data, device):
+    """Compute residual magnitudes for adaptive sampling.
+    
+    Returns:
+        Dictionary of residual magnitudes for each data type
+    """
+    residuals = {}
+
+    # --- PDE Residuals (Interior) ---
+    x_int = data['interior'][0].to(device)
+    x_int.requires_grad = True
+    
+    lm, mu = config.Lame_Params[0]
+    
+    u = model(x_int, 0)
+    grad_u = gradient(u, x_int)
+    eps = strain(grad_u)
+    sig = stress(eps, lm, mu)
+    div_sigma = divergence(sig, x_int)
+    
+    residual = -div_sigma
+    residual_mag = torch.sqrt(torch.sum(residual**2, dim=1))
+    residuals['interior'] = residual_mag.cpu()
+    
+    # --- BC Sides Residuals ---
+    x_side = data['sides'][0].to(device)
+    u_side = model(x_side, 0)
+    bc_residual = torch.sqrt(torch.sum(u_side**2, dim=1))
+    residuals['sides'] = bc_residual.cpu()
+    
+    # --- Top Load Residuals ---
+    x_top_load = data['top_load'].to(device)
+    x_top_load.requires_grad = True
+    u_top = model(x_top_load, 0)
+    grad_u_top = gradient(u_top, x_top_load)
+    sig_top = stress(strain(grad_u_top), lm, mu)
+    T = sig_top[:, :, 2]
+    target = torch.tensor([0.0, 0.0, -config.p0], device=device).repeat(x_top_load.shape[0], 1)
+    load_residual = torch.sqrt(torch.sum((T - target)**2, dim=1))
+    residuals['top_load'] = load_residual.cpu()
+    
+    # --- Top Free Residuals ---
+    x_top_free = data['top_free'].to(device)
+    x_top_free.requires_grad = True
+    u_top_free = model(x_top_free, 0)
+    grad_u_free = gradient(u_top_free, x_top_free)
+    sig_top_free = stress(strain(grad_u_free), lm, mu)
+    T_free = sig_top_free[:, :, 2]
+    free_residual = torch.sqrt(torch.sum(T_free**2, dim=1))
+    residuals['top_free'] = free_residual.cpu()
+    
+    # --- Bottom Residuals ---
+    x_bot = data['bottom'].to(device)
+    x_bot.requires_grad = True
+    u_bot = model(x_bot, 0)
+    grad_u_bot = gradient(u_bot, x_bot)
+    sig_bot = stress(strain(grad_u_bot), lm, mu)
+    T_bot = -sig_bot[:, :, 2]
+    bot_residual = torch.sqrt(torch.sum(T_bot**2, dim=1))
+    residuals['bottom'] = bot_residual.cpu()
+
+    return residuals

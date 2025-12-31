@@ -27,9 +27,9 @@ Lame_Params = [get_lame_params(e, n) for e, n in zip(E_vals, nu_vals)]
 p0 = 1.0 # Load magnitude
 
 # --- Training Hyperparameters ---
-LEARNING_RATE = 5e-4
+LEARNING_RATE = 1e-3
 EPOCHS_ADAM = 2000 # Increased to enforce load and reduce underfit
-EPOCHS_LBFGS = 10 # Increased from 500. Resampling here. Should help convergence. 
+EPOCHS_LBFGS = 100 # Increased from 500. Resampling here. Should help convergence. 
 #Plot Physical Residuals Every N Epochs every 100 epochs. 
 WEIGHTS = {
     'pde': 1.0,    # Increased from 1.0
@@ -39,7 +39,7 @@ WEIGHTS = {
 }
 # Sampling
 N_INTERIOR = 10000 # Per layer
-N_BOUNDARY = 1500  # Per face type
+N_BOUNDARY = 2000  # Per face type
 
 # Fourier Features
 FOURIER_DIM = 0 # Number of Fourier frequencies
