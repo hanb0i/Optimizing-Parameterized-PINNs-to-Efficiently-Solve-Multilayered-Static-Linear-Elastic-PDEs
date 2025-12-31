@@ -22,7 +22,7 @@ class FourierFeatures(nn.Module):
         return torch.cat([torch.sin(x_proj), torch.cos(x_proj)], dim=-1)
 
 class LayerNet(nn.Module):
-    def __init__(self, hidden_layers=6, hidden_units=64, activation=nn.Tanh(), 
+    def __init__(self, hidden_layers=2, hidden_units=32, activation=nn.Tanh(), 
                  fourier_dim=0, fourier_scale=1.0):
         super().__init__()
         layers = []
@@ -77,24 +77,14 @@ class LayerNet(nn.Module):
 class MultiLayerPINN(nn.Module):
     def __init__(self):
         super().__init__()
-        # 3 Separate networks for 3 layers
+        # Single network for homogeneous material
         # Use parameters from config
-        self.layer1 = LayerNet(fourier_dim=config.FOURIER_DIM, fourier_scale=config.FOURIER_SCALE)
-        self.layer2 = LayerNet(fourier_dim=config.FOURIER_DIM, fourier_scale=config.FOURIER_SCALE)
-        self.layer3 = LayerNet(fourier_dim=config.FOURIER_DIM, fourier_scale=config.FOURIER_SCALE)
+        self.layer = LayerNet(fourier_dim=config.FOURIER_DIM, fourier_scale=config.FOURIER_SCALE)
         
-    def forward(self, x, layer_idx):
-        if layer_idx == 0:
-            return self.layer1(x)
-        elif layer_idx == 1:
-            return self.layer2(x)
-        elif layer_idx == 2:
-            return self.layer3(x)
-        else:
-            raise ValueError("Invalid layer index")
+    def forward(self, x, layer_idx=0):
+        # layer_idx kept for compatibility but not used
+        return self.layer(x)
 
     def predict_all(self, x):
-        # Helper to predict across full domain? 
-        # Typically requires knowing which layer x belongs to.
-        # For inference, user handles masking.
-        pass
+        # Direct prediction for single layer
+        return self.layer(x)

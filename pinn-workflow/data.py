@@ -92,38 +92,26 @@ def sample_interface(n, z_val):
     return torch.cat([x, y, z], dim=1)
 
 def get_data():
-    # Interior points for 3 layers
-    in1 = sample_domain(config.N_INTERIOR, config.Layer_Interfaces[0], config.Layer_Interfaces[1])
-    in2 = sample_domain(config.N_INTERIOR, config.Layer_Interfaces[1], config.Layer_Interfaces[2])
-    in3 = sample_domain(config.N_INTERIOR, config.Layer_Interfaces[2], config.Layer_Interfaces[3])
+    # Interior points for single layer
+    interior = sample_domain(config.N_INTERIOR, config.Layer_Interfaces[0], config.Layer_Interfaces[1])
     
-    # Clamped sides for 3 layers
-    bc_sides1 = sample_boundaries(config.N_BOUNDARY, config.Layer_Interfaces[0], config.Layer_Interfaces[1])
-    bc_sides2 = sample_boundaries(config.N_BOUNDARY, config.Layer_Interfaces[1], config.Layer_Interfaces[2])
-    bc_sides3 = sample_boundaries(config.N_BOUNDARY, config.Layer_Interfaces[2], config.Layer_Interfaces[3])
+    # Clamped sides for single layer
+    bc_sides = sample_boundaries(config.N_BOUNDARY, config.Layer_Interfaces[0], config.Layer_Interfaces[1])
     
-    # Top Surface (Layer 3)
+    # Top Surface
     top_load, top_free = sample_top(config.N_BOUNDARY)
     
-    # Bottom Surface (Layer 1) - Free
+    # Bottom Surface - Free
     # z=0
     x_bot = torch.rand(config.N_BOUNDARY, 1) * config.Lx
     y_bot = torch.rand(config.N_BOUNDARY, 1) * config.Ly
     z_bot = torch.zeros(config.N_BOUNDARY, 1)
     bot_free = torch.cat([x_bot, y_bot, z_bot], dim=1)
     
-    # Interfaces
-    # 1-2
-    if_12 = sample_interface(config.N_BOUNDARY, config.Layer_Interfaces[1])
-    # 2-3
-    if_23 = sample_interface(config.N_BOUNDARY, config.Layer_Interfaces[2])
-    
     return {
-        'interior': [in1, in2, in3],
-        'sides': [bc_sides1, bc_sides2, bc_sides3],
+        'interior': [interior],
+        'sides': [bc_sides],
         'top_load': top_load,
         'top_free': top_free,
-        'bottom': bot_free,
-        'if_12': if_12,
-        'if_23': if_23
+        'bottom': bot_free
     }

@@ -57,42 +57,12 @@ def compare():
     
     pts = np.stack([X_fea.ravel(), Y_fea.ravel(), Z_fea.ravel()], axis=1) # (N, 3)
     
-    # We need to query layer-wise because PINN takes layer_idx
-    # Layer interfaces: 0, 0.033, 0.066, 0.1
-    # Z coordinate determines layer
-    z_flat = pts[:, 2]
-    
-    # Masks
-    eps = 1e-5
-    mask1 = (z_flat >= config.Layer_Interfaces[0] - eps) & (z_flat <= config.Layer_Interfaces[1] + eps)
-    mask2 = (z_flat >= config.Layer_Interfaces[1] - eps) & (z_flat <= config.Layer_Interfaces[2] + eps)
-    mask3 = (z_flat >= config.Layer_Interfaces[2] - eps) & (z_flat <= config.Layer_Interfaces[3] + eps)
-    
-    # Prioritize higher layers for overlaps (standard practice or arbitrary)
-    # Actually, interfaces match, so just pick one.
-    mask2 = mask2 & (~mask1) # simple exclusivity cleanup if needed, but overlap is fine if continuous
-    # Better: strict intervals
-    m1 = z_flat <= config.Layer_Interfaces[1]
-    m2 = (z_flat > config.Layer_Interfaces[1]) & (z_flat <= config.Layer_Interfaces[2])
-    m3 = z_flat > config.Layer_Interfaces[2]
-    
+    # Single layer - query all points at once
     U_pinn_flat = np.zeros_like(pts)
     
     with torch.no_grad():
-        # Layer 1
-        p1 = torch.tensor(pts[m1], dtype=torch.float32).to(device)
-        if len(p1) > 0:
-            U_pinn_flat[m1] = pinn(p1, 0).cpu().numpy()
-            
-        # Layer 2
-        p2 = torch.tensor(pts[m2], dtype=torch.float32).to(device)
-        if len(p2) > 0:
-            U_pinn_flat[m2] = pinn(p2, 1).cpu().numpy()
-            
-        # Layer 3
-        p3 = torch.tensor(pts[m3], dtype=torch.float32).to(device)
-        if len(p3) > 0:
-            U_pinn_flat[m3] = pinn(p3, 2).cpu().numpy()
+        pts_tensor = torch.tensor(pts, dtype=torch.float32).to(device)
+        U_pinn_flat = pinn(pts_tensor, 0).cpu().numpy()
             
     U_pinn = U_pinn_flat.reshape(U_fea.shape)
     
