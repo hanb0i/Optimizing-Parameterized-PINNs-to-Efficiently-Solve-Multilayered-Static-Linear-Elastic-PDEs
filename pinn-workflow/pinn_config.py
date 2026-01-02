@@ -35,11 +35,18 @@ EPOCHS_ADAM = 3000 # Optimized based on convergence analysis
 EPOCHS_LBFGS = 2000 
 #Plot Physical Residuals Every N Epochs every 100 epochs. 
 WEIGHTS = {
+<<<<<<< HEAD
     'pde': 0.0,     # Zero physics to force deformation
     'bc': 1.0,      
     'load': 10000.0, # Maximum forcing
     'interface_u': 100.0,
     'interface_stress': 10.0 
+=======
+    'pde': 5.0,    # Increased from 1.0
+    'bc': 1.0,      # Reduced, as hard constraint handles side BCs now
+    'load': 1000.0, # Heavily increased from 100.0 to drive deformation
+    'interface_u': 100.0 
+>>>>>>> 68f0fc8b05e6d073cb58b257d512c9e40abf836b
 }
 # Sampling
 N_INTERIOR = 8000 # Standard sampling for speed
