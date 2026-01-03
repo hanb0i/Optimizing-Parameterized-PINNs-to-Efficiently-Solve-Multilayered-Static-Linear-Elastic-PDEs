@@ -33,7 +33,7 @@ LOAD_PATCH_Y = [Ly/3, 2*Ly/3]  # [0.333, 0.667]
 # --- Training Hyperparameters ---
 LEARNING_RATE = 1e-3
 EPOCHS_ADAM = 2000 # Increased to enforce load and reduce underfit
-EPOCHS_LBFGS = 100 # Increased from 500. Resampling here. Should help convergence. 
+EPOCHS_LBFGS = 30 # Increased from 500. Resampling here. Should help convergence. 
 #Plot Physical Residuals Every N Epochs every 100 epochs. 
 WEIGHTS = {
     'pde': 1.0,    # Increased from 1.0
