@@ -5,7 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import torch
 
-REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PINN_WORKFLOW_DIR = os.path.join(REPO_ROOT, "pinn-workflow")
 if PINN_WORKFLOW_DIR not in sys.path:
     sys.path.insert(0, PINN_WORKFLOW_DIR)
@@ -16,7 +16,10 @@ import model
 
 def main():
     print("Loading FEA Solution...")
-    data = np.load("fea_solution.npy", allow_pickle=True).item()
+    fea_path = os.path.join(REPO_ROOT, "fea_solution.npy")
+    if not os.path.exists(fea_path):
+        fea_path = os.path.join(PINN_WORKFLOW_DIR, "fea_solution.npy")
+    data = np.load(fea_path, allow_pickle=True).item()
     X_fea = data["x"]
     Y_fea = data["y"]
     Z_fea = data["z"]
@@ -32,9 +35,8 @@ def main():
         device = torch.device("cpu")
 
     pinn = model.MultiLayerPINN().to(device)
-    pinn.load_state_dict(
-        torch.load("pinn_model.pth", map_location=device, weights_only=True)
-    )
+    model_path = os.path.join(REPO_ROOT, "pinn_model.pth")
+    pinn.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
     pinn.eval()
     print("PINN model loaded")
 
@@ -92,7 +94,8 @@ def main():
     plt.colorbar(c3, ax=axes[2])
 
     plt.tight_layout()
-    plt.savefig("comparison_top.png", dpi=150)
+    output_path = os.path.join(REPO_ROOT, "comparison_top.png")
+    plt.savefig(output_path, dpi=150)
     print("Saved comparison_top.png")
     plt.show()
 
