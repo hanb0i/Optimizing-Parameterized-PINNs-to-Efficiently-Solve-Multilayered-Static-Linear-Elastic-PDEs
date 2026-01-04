@@ -36,6 +36,8 @@ def main():
 
     pinn = model.MultiLayerPINN().to(device)
     model_path = os.path.join(REPO_ROOT, "pinn_model.pth")
+    if not os.path.exists(model_path):
+        model_path = os.path.join(PINN_WORKFLOW_DIR, "pinn_model.pth")
     pinn.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
     pinn.eval()
     print("PINN model loaded")

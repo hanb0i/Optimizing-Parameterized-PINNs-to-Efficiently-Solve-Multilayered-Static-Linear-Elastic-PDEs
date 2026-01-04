@@ -145,10 +145,12 @@ def compute_loss(model, data, device):
     # T = [sigma_02, sigma_12, sigma_22] = [sigma_xz, sigma_yz, sigma_zz]
     T = sig_top[:, :, 2] 
     
-    # Apply soft edge mask to target load
-    mask = load_mask(x_top_load).unsqueeze(1)  # (N, 1)
-    # Target: (0, 0, -p0 * mask) - load smoothly transitions to zero at edges
-    target_load = -config.p0 * mask
+    # Target traction on the loaded patch
+    if config.USE_LOAD_MASK:
+        mask = load_mask(x_top_load).unsqueeze(1)  # (N, 1)
+        target_load = -config.p0 * config.LOAD_MASK_SCALE * mask
+    else:
+        target_load = -config.p0 * torch.ones_like(x_top_load[:, :1])
     target = torch.cat([torch.zeros_like(target_load), 
                        torch.zeros_like(target_load), 
                        target_load], dim=1)
@@ -228,9 +230,12 @@ def compute_residuals(model, data, device):
     grad_u_top = gradient(u_top, x_top_load)
     sig_top = stress(strain(grad_u_top), lm, mu)
     T = sig_top[:, :, 2]
-    # Match training loss: soft mask for load patch
-    mask = load_mask(x_top_load).unsqueeze(1)
-    target_load = -config.p0 * mask
+    # Match training loss: uniform or masked load
+    if config.USE_LOAD_MASK:
+        mask = load_mask(x_top_load).unsqueeze(1)
+        target_load = -config.p0 * config.LOAD_MASK_SCALE * mask
+    else:
+        target_load = -config.p0 * torch.ones_like(x_top_load[:, :1])
     target = torch.cat(
         [
             torch.zeros_like(target_load),

@@ -29,6 +29,8 @@ p0 = 1.0 # Load magnitude
 # Load patch boundaries (normalized coordinates)
 LOAD_PATCH_X = [Lx/3, 2*Lx/3]  # [0.333, 0.667]
 LOAD_PATCH_Y = [Ly/3, 2*Ly/3]  # [0.333, 0.667]
+USE_LOAD_MASK = False  # Match FEM's uniform patch pressure by default
+LOAD_MASK_SCALE = 1.0  # Use to rescale masked pressure if enabled
 
 # --- Training Hyperparameters ---
 LEARNING_RATE = 1e-3
@@ -38,7 +40,7 @@ EPOCHS_LBFGS = 30 # Increased from 500. Resampling here. Should help convergence
 WEIGHTS = {
     'pde': 1.0,    # Increased from 1.0
     'bc': 1.0,      # Reduced, as hard constraint handles side BCs now
-    'load': 5.0, # Heavily increased to match traction target
+    'load': 50.0, # Heavily increased to match traction target
     'interface_u': 1.0 
 }
 # Sampling
