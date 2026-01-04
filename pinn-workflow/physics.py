@@ -228,8 +228,18 @@ def compute_residuals(model, data, device):
     grad_u_top = gradient(u_top, x_top_load)
     sig_top = stress(strain(grad_u_top), lm, mu)
     T = sig_top[:, :, 2]
-    target = torch.tensor([0.0, 0.0, -config.p0], device=device).repeat(x_top_load.shape[0], 1)
-    load_residual = torch.sqrt(torch.sum((T - target)**2, dim=1))
+    # Match training loss: soft mask for load patch
+    mask = load_mask(x_top_load).unsqueeze(1)
+    target_load = -config.p0 * mask
+    target = torch.cat(
+        [
+            torch.zeros_like(target_load),
+            torch.zeros_like(target_load),
+            target_load,
+        ],
+        dim=1,
+    )
+    load_residual = torch.sqrt(torch.sum((T - target) ** 2, dim=1))
     residuals['top_load'] = load_residual.cpu()
     
     # --- Top Free Residuals ---

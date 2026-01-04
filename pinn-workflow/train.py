@@ -33,7 +33,10 @@ def train():
     # Load FEM data for comparison
     print("Loading FEM solution for comparison...")
     try:
-        fem_data = np.load("fea_solution.npy", allow_pickle=True).item()
+        fea_path = "fea_solution.npy"
+        if not os.path.exists(fea_path):
+            fea_path = os.path.join(os.path.dirname(__file__), "fea_solution.npy")
+        fem_data = np.load(fea_path, allow_pickle=True).item()
         X_fea = fem_data['x']
         Y_fea = fem_data['y']
         Z_fea = fem_data['z']
