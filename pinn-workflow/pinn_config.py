@@ -29,6 +29,8 @@ p0 = 1.0 # Load magnitude
 # Load patch boundaries (normalized coordinates)
 LOAD_PATCH_X = [Lx/3, 2*Lx/3]  # [0.333, 0.667]
 LOAD_PATCH_Y = [Ly/3, 2*Ly/3]  # [0.333, 0.667]
+USE_LOAD_MASK = False  # Match FEM's uniform patch pressure by default
+LOAD_MASK_SCALE = 1.0  # Use to rescale masked pressure if enabled
 
 # --- Training Hyperparameters ---
 LEARNING_RATE = 1e-3

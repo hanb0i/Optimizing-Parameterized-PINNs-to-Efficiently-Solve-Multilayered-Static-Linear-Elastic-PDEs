@@ -5,7 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import torch
 
-REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PINN_WORKFLOW_DIR = os.path.join(REPO_ROOT, "pinn-workflow")
 if PINN_WORKFLOW_DIR not in sys.path:
     sys.path.insert(0, PINN_WORKFLOW_DIR)
@@ -16,11 +16,9 @@ import model
 
 def main():
     print("Loading FEA Solution...")
-    fea_path = os.path.join(PINN_WORKFLOW_DIR, "fea_solution.npy")
+    fea_path = os.path.join(REPO_ROOT, "fea_solution.npy")
     if not os.path.exists(fea_path):
-        # Fallback to local
-        fea_path = "fea_solution.npy"
-    print(f"Loading from: {fea_path}")
+        fea_path = os.path.join(PINN_WORKFLOW_DIR, "fea_solution.npy")
     data = np.load(fea_path, allow_pickle=True).item()
     X_fea = data["x"]
     Y_fea = data["y"]
@@ -37,13 +35,10 @@ def main():
         device = torch.device("cpu")
 
     pinn = model.MultiLayerPINN().to(device)
-    model_path = os.path.join(PINN_WORKFLOW_DIR, "pinn_model.pth")
+    model_path = os.path.join(REPO_ROOT, "pinn_model.pth")
     if not os.path.exists(model_path):
-        model_path = "pinn_model.pth"
-    print(f"Loading PINN from: {model_path}")
-    pinn.load_state_dict(
-        torch.load(model_path, map_location=device, weights_only=True)
-    )
+        model_path = os.path.join(PINN_WORKFLOW_DIR, "pinn_model.pth")
+    pinn.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
     pinn.eval()
     print("PINN model loaded")
 
@@ -101,7 +96,8 @@ def main():
     plt.colorbar(c3, ax=axes[2])
 
     plt.tight_layout()
-    plt.savefig("comparison_top.png", dpi=150)
+    output_path = os.path.join(REPO_ROOT, "comparison_top.png")
+    plt.savefig(output_path, dpi=150)
     print("Saved comparison_top.png")
     plt.show()
 
