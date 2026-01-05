@@ -3,6 +3,41 @@ import torch
 import torch.autograd as autograd
 import pinn_config as config
 
+def load_mask(x):
+    """
+    Soft edge mask for load patch using quadratic function.
+    Similar to side BC mask: M(x,y) = 16*x(1-x)*y(1-y)
+    but applied to normalized coordinates within the load patch.
+    
+    For x,y ∈ [1/3, 2/3], normalize to [0,1] and apply quadratic.
+    Outside the patch, mask = 0.
+    
+    Args:
+        x: (N, 3) tensor of coordinates
+    Returns:
+        mask: (N,) tensor of mask values ∈ [0, 1]
+    """
+    x_coord = x[:, 0]
+    y_coord = x[:, 1]
+    
+    x_min, x_max = config.LOAD_PATCH_X
+    y_min, y_max = config.LOAD_PATCH_Y
+    
+    # Normalize coordinates to [0, 1] within patch
+    x_norm = (x_coord - x_min) / (x_max - x_min)
+    y_norm = (y_coord - y_min) / (y_max - y_min)
+    
+    # Quadratic falloff: M(x,y) = 16*x(1-x)*y(1-y)
+    # This gives M=1 at center (0.5, 0.5) and M=0 at edges
+    mask = 16.0 * x_norm * (1.0 - x_norm) * y_norm * (1.0 - y_norm)
+    
+    # Clamp to ensure mask is only non-zero within patch
+    mask = torch.where((x_coord >= x_min) & (x_coord <= x_max) & 
+                       (y_coord >= y_min) & (y_coord <= y_max),
+                       mask, torch.zeros_like(mask))
+    
+    return mask
+
 def gradient(u, x):
     # u: (N, 3), x: (N, 3)
     # Returns du/dx: (N, 3, 3)
@@ -67,36 +102,29 @@ def compute_loss(model, data, device):
     losses = {}
     
     # --- 1. PDE Residuals (Interior) ---
-    pde_loss = 0
-    for i in range(3): # For each layer
-        x_int = data['interior'][i].to(device)
-        x_int.requires_grad = True
-        
-        lm, mu = config.Lame_Params[i]
-        
-        u = model(x_int, i)
-        grad_u = gradient(u, x_int)
-        eps = strain(grad_u)
-        sig = stress(eps, lm, mu)
-        div_sigma = divergence(sig, x_int)
-        
-        # Equilibrium: -div(sigma) = 0
-        residual = -div_sigma
-        
-        loss_i = torch.mean(residual**2)
-        pde_loss += loss_i
-        
+    x_int = data['interior'][0].to(device)
+    x_int.requires_grad = True
+    
+    lm, mu = config.Lame_Params[0]
+    
+    u = model(x_int, 0)
+    grad_u = gradient(u, x_int)
+    eps = strain(grad_u)
+    sig = stress(eps, lm, mu)
+    div_sigma = divergence(sig, x_int)
+    
+    # Equilibrium: -div(sigma) = 0
+    residual = -div_sigma
+    
+    pde_loss = torch.mean(residual**2)
     losses['pde'] = pde_loss
     total_loss += config.WEIGHTS['pde'] * pde_loss
     
     # --- 2. Dirichlet BCs (Clamped Sides) ---
-    bc_loss = 0
-    for i in range(3):
-        x_side = data['sides'][i].to(device)
-        u_side = model(x_side, i)
-        # u = 0
-        loss_side = torch.mean(u_side**2)
-        bc_loss += loss_side
+    x_side = data['sides'][0].to(device)
+    u_side = model(x_side, 0)
+    # u = 0
+    bc_loss = torch.mean(u_side**2)
         
     losses['bc_sides'] = bc_loss
     total_loss += config.WEIGHTS['bc'] * bc_loss
@@ -106,20 +134,26 @@ def compute_loss(model, data, device):
     x_top_load = data['top_load'].to(device)
     x_top_load.requires_grad = True
     
-    lm3, mu3 = config.Lame_Params[2] # Layer 3
-    u_top = model(x_top_load, 2)
+    lm, mu = config.Lame_Params[0] # Single layer
+    u_top = model(x_top_load, 0)
     grad_u_top = gradient(u_top, x_top_load)
-    sig_top = stress(strain(grad_u_top), lm3, mu3)
+    sig_top = stress(strain(grad_u_top), lm, mu)
     
     # n = (0, 0, 1)
-    # Traction T = sigma * n
-    # T_z = sigma_zz * 1 + ...
-    # n = [0, 0, 1]^T
-    # T = [sigma_x3, sigma_y3, sigma_z3]^T
+    # Traction T = sigma · n
+    # T_i = sigma_ij * n_j = sigma_i2 (since only n_z=1)
+    # T = [sigma_02, sigma_12, sigma_22] = [sigma_xz, sigma_yz, sigma_zz]
     T = sig_top[:, :, 2] 
     
-    # Target: (0, 0, -p0)
-    target = torch.tensor([0.0, 0.0, -config.p0], device=device).repeat(x_top_load.shape[0], 1)
+    # Target traction on the loaded patch
+    if config.USE_LOAD_MASK:
+        mask = load_mask(x_top_load).unsqueeze(1)  # (N, 1)
+        target_load = -config.p0 * config.LOAD_MASK_SCALE * mask
+    else:
+        target_load = -config.p0 * torch.ones_like(x_top_load[:, :1])
+    target = torch.cat([torch.zeros_like(target_load), 
+                       torch.zeros_like(target_load), 
+                       target_load], dim=1)
     
     loss_load = torch.mean((T - target)**2)
     losses['load'] = loss_load
@@ -128,49 +162,109 @@ def compute_loss(model, data, device):
     # Top Free
     x_top_free = data['top_free'].to(device)
     x_top_free.requires_grad = True
-    u_top_free = model(x_top_free, 2)
+    u_top_free = model(x_top_free, 0)
     grad_u_free = gradient(u_top_free, x_top_free)
-    sig_top_free = stress(strain(grad_u_free), lm3, mu3)
+    sig_top_free = stress(strain(grad_u_free), lm, mu)
     T_free = sig_top_free[:, :, 2]
+    # Traction on top free surface (n = [0,0,1])
     
     loss_free = torch.mean(T_free**2)
     losses['free_top'] = loss_free
     total_loss += config.WEIGHTS['bc'] * loss_free # Use BC weight
     
-    # Bottom Free (Layer 1)
+    # Bottom Free
     x_bot = data['bottom'].to(device)
     x_bot.requires_grad = True
     
-    lm1, mu1 = config.Lame_Params[0]
     u_bot = model(x_bot, 0)
     grad_u_bot = gradient(u_bot, x_bot)
-    sig_bot = stress(strain(grad_u_bot), lm1, mu1)
+    sig_bot = stress(strain(grad_u_bot), lm, mu)
     
-    # n = (0, 0, -1) -> T = sigma * n = - sigma_3j
-    # We want T = 0 -> sigma_3j = 0
+    # Bottom surface: n = (0, 0, -1)
+    # T = sigma · n = -sigma[:,:,2]
     T_bot = -sig_bot[:, :, 2]
     
     loss_bot = torch.mean(T_bot**2)
     losses['free_bot'] = loss_bot
     total_loss += config.WEIGHTS['bc'] * loss_bot
     
-    # --- 4. Interface Continuity (u matching) ---
-    # Layer 1-2
-    x_if12 = data['if_12'].to(device)
-    u1_if = model(x_if12, 0)
-    u2_if = model(x_if12, 1)
-    
-    loss_if12 = torch.mean((u1_if - u2_if)**2)
-    
-    # Layer 2-3
-    x_if23 = data['if_23'].to(device)
-    u2_if_23 = model(x_if23, 1)
-    u3_if = model(x_if23, 2)
-    
-    loss_if23 = torch.mean((u2_if_23 - u3_if)**2)
-    
-    losses['interface'] = loss_if12 + loss_if23
-    total_loss += config.WEIGHTS['interface_u'] * (loss_if12 + loss_if23)
+    # No interface continuity for single layer
     
     losses['total'] = total_loss
     return total_loss, losses
+
+def compute_residuals(model, data, device):
+    """Compute residual magnitudes for adaptive sampling.
+    
+    Returns:
+        Dictionary of residual magnitudes for each data type
+    """
+    residuals = {}
+
+    # --- PDE Residuals (Interior) ---
+    x_int = data['interior'][0].to(device)
+    x_int.requires_grad = True
+    
+    lm, mu = config.Lame_Params[0]
+    
+    u = model(x_int, 0)
+    grad_u = gradient(u, x_int)
+    eps = strain(grad_u)
+    sig = stress(eps, lm, mu)
+    div_sigma = divergence(sig, x_int)
+    
+    residual = -div_sigma
+    residual_mag = torch.sqrt(torch.sum(residual**2, dim=1))
+    residuals['interior'] = residual_mag.cpu()
+    
+    # --- BC Sides Residuals ---
+    x_side = data['sides'][0].to(device)
+    u_side = model(x_side, 0)
+    bc_residual = torch.sqrt(torch.sum(u_side**2, dim=1))
+    residuals['sides'] = bc_residual.cpu()
+    
+    # --- Top Load Residuals ---
+    x_top_load = data['top_load'].to(device)
+    x_top_load.requires_grad = True
+    u_top = model(x_top_load, 0)
+    grad_u_top = gradient(u_top, x_top_load)
+    sig_top = stress(strain(grad_u_top), lm, mu)
+    T = sig_top[:, :, 2]
+    # Match training loss: uniform or masked load
+    if config.USE_LOAD_MASK:
+        mask = load_mask(x_top_load).unsqueeze(1)
+        target_load = -config.p0 * config.LOAD_MASK_SCALE * mask
+    else:
+        target_load = -config.p0 * torch.ones_like(x_top_load[:, :1])
+    target = torch.cat(
+        [
+            torch.zeros_like(target_load),
+            torch.zeros_like(target_load),
+            target_load,
+        ],
+        dim=1,
+    )
+    load_residual = torch.sqrt(torch.sum((T - target) ** 2, dim=1))
+    residuals['top_load'] = load_residual.cpu()
+    
+    # --- Top Free Residuals ---
+    x_top_free = data['top_free'].to(device)
+    x_top_free.requires_grad = True
+    u_top_free = model(x_top_free, 0)
+    grad_u_free = gradient(u_top_free, x_top_free)
+    sig_top_free = stress(strain(grad_u_free), lm, mu)
+    T_free = sig_top_free[:, :, 2]
+    free_residual = torch.sqrt(torch.sum(T_free**2, dim=1))
+    residuals['top_free'] = free_residual.cpu()
+    
+    # --- Bottom Residuals ---
+    x_bot = data['bottom'].to(device)
+    x_bot.requires_grad = True
+    u_bot = model(x_bot, 0)
+    grad_u_bot = gradient(u_bot, x_bot)
+    sig_bot = stress(strain(grad_u_bot), lm, mu)
+    T_bot = -sig_bot[:, :, 2]
+    bot_residual = torch.sqrt(torch.sum(T_bot**2, dim=1))
+    residuals['bottom'] = bot_residual.cpu()
+
+    return residuals
