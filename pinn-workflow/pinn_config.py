@@ -33,7 +33,7 @@ LOAD_PATCH_Y = [Ly/3, 2*Ly/3]  # [0.333, 0.667]
 # --- Training Hyperparameters ---
 LEARNING_RATE = 1e-3
 EPOCHS_ADAM = 2000 # Increased to enforce load and reduce underfit
-EPOCHS_LBFGS = 30 # SOAP fine-tuning steps; resampling here should help convergence.
+EPOCHS_LBFGS = 30 # L-BFGS fine-tuning steps; resampling here should help convergence.
 # SOAP optimizer
 SOAP_PRECONDITION_FREQUENCY = 10 # Lower = more frequent curvature updates; higher = cheaper but less responsive
 #Plot Physical Residuals Every N Epochs every 100 epochs. 

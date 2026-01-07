@@ -88,7 +88,7 @@ def train():
         'steps': []
     }
     
-    print("Starting SOAP Training...")
+    print("Starting SOAP Pretraining...")
     start_time = time.time()
     last_time = start_time
     
@@ -142,20 +142,19 @@ def train():
                       f"Free_top: {losses['free_top']:.6f} | Free_bot: {losses['free_bot']:.6f} | "
                       f"Load: {losses['load']:.6f} | LR: {current_lr:.2e} | Time: {step_duration:.4f}s")
             
-    print(f"SOAP Training Complete. Total Time: {time.time() - start_time:.2f}s")
+    print(f"SOAP Pretraining Complete. Total Time: {time.time() - start_time:.2f}s")
     
-    # SOAP Fine-Tuning
-    print("Starting SOAP Fine-Tuning...")
-    optimizer_lbfgs = soap.SOAP(
+    # L-BFGS Fine-Tuning
+    print("Starting L-BFGS Fine-Tuning...")
+    optimizer_lbfgs = optim.LBFGS(
         pinn.parameters(),
-        lr=config.LEARNING_RATE,
-        betas=(0.95, 0.95),
-        weight_decay=1e-2,
-        precondition_frequency=config.SOAP_PRECONDITION_FREQUENCY,
+        lr=1.0,
+        max_iter=1,
+        line_search_fn="strong_wolfe",
     )
         
     num_lbfgs_steps = config.EPOCHS_LBFGS
-    print(f"Running {num_lbfgs_steps} SOAP outer steps.")
+    print(f"Running {num_lbfgs_steps} L-BFGS outer steps.")
     print("Resampling with residual-based adaptive sampling each outer step.")
     
     for i in range(num_lbfgs_steps):
@@ -164,10 +163,13 @@ def train():
         training_data = data.get_data(prev_data=training_data, residuals=residuals)
         
         step_start = time.time()
-        optimizer_lbfgs.zero_grad()
-        loss_val, losses = physics.compute_loss(pinn, training_data, device)
-        loss_val.backward()
-        optimizer_lbfgs.step()
+        def closure():
+            optimizer_lbfgs.zero_grad()
+            loss_val, _ = physics.compute_loss(pinn, training_data, device)
+            loss_val.backward()
+            return loss_val
+
+        loss_val = optimizer_lbfgs.step(closure)
         step_end = time.time()
         
         # Compute losses for logging
@@ -189,12 +191,12 @@ def train():
                 lbfgs_history['fem_mae'].append(mae)
                 lbfgs_history['fem_max_err'].append(max_err)
                 lbfgs_history['steps'].append(i)
-            print(f"SOAP Step {i}: Total Loss: {loss_val.item():.6e} | PDE: {losses['pde'].item():.6e} | "
+            print(f"L-BFGS Step {i}: Total Loss: {loss_val.item():.6e} | PDE: {losses['pde'].item():.6e} | "
                   f"BC_sides: {losses['bc_sides'].item():.6e} | Free_top: {losses['free_top'].item():.6e} | "
                   f"Free_bot: {losses['free_bot'].item():.6e} | Load: {losses['load'].item():.6e} | "
                   f"FEM MAE: {mae:.6e} | Time: {step_end - step_start:.4f}s")
         else:
-            print(f"SOAP Step {i}: Total Loss: {loss_val.item():.6e} | PDE: {losses['pde'].item():.6e} | "
+            print(f"L-BFGS Step {i}: Total Loss: {loss_val.item():.6e} | PDE: {losses['pde'].item():.6e} | "
                   f"BC_sides: {losses['bc_sides'].item():.6e} | Free_top: {losses['free_top'].item():.6e} | "
                   f"Free_bot: {losses['free_bot'].item():.6e} | Load: {losses['load'].item():.6e} | "
                   f"Time: {step_end - step_start:.4f}s")
