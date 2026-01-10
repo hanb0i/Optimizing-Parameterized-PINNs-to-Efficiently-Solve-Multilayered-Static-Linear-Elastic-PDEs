@@ -116,6 +116,10 @@ def compute_loss(model, data, device, weights=None):
     losses['pde'] = pde_loss
     total_loss += pde_weight * pde_loss
     
+    # Internal strain energy (volume integral, approximated by mean * volume)
+    energy_density = 0.5 * torch.einsum('bij,bij->b', eps, sig)
+    internal_energy = energy_density.mean() * (config.Lx * config.Ly * config.H)
+    
     # --- 2. Dirichlet BCs (Clamped Sides) ---
     x_side = get_tensor('sides')
     u_side = model(x_side, 0)
@@ -152,6 +156,15 @@ def compute_loss(model, data, device, weights=None):
     loss_load = torch.mean((T - target)**2)
     losses['load'] = loss_load
     total_loss += load_weight * loss_load
+    
+    # External work from applied traction on the load patch
+    patch_area = (config.LOAD_PATCH_X[1] - config.LOAD_PATCH_X[0]) * (
+        config.LOAD_PATCH_Y[1] - config.LOAD_PATCH_Y[0]
+    )
+    external_work = (-config.p0 * u_top[:, 2:3] * mask).mean() * patch_area
+    energy_loss = internal_energy - external_work
+    losses['energy'] = energy_loss
+    total_loss += config.WEIGHTS['energy'] * energy_loss
     
     # Top Free
     x_top_free = data['top_free'].to(device)

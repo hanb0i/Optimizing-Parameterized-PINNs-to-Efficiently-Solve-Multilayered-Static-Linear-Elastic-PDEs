@@ -41,11 +41,13 @@ WEIGHTS = {
     'pde': 1.0,    # Increased from 1.0
     'bc': 1.0,      # Reduced, as hard constraint handles side BCs now
     'load': 1.0, # Heavily increased to match traction target
+    'energy': 1.0, # Energy/compliance balance
     'interface_u': 1.0 
 }
 # Sampling
 N_INTERIOR = 10000 # Per layer
 N_BOUNDARY = 2000  # Per face type
+UNDER_PATCH_FRACTION = 0.6 # Fraction of interior points sampled under the load patch
 
 # Fourier Features
 FOURIER_DIM = 0 # Number of Fourier frequencies

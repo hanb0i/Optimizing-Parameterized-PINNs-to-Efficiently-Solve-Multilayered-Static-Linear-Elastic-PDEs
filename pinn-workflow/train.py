@@ -34,7 +34,7 @@ def train():
         pinn.parameters(),
         lr=config.LEARNING_RATE,
         betas=(0.95, 0.95),
-        weight_decay=1e-2,
+        weight_decay=0.0, #was 1e-2
         precondition_frequency=config.SOAP_PRECONDITION_FREQUENCY,
     )
     
@@ -72,6 +72,7 @@ def train():
         'free_top': [],
         'free_bot': [],
         'load': [],
+        'energy': [],
         'fem_mae': [],
         'fem_max_err': [],
         'epochs': []
@@ -84,6 +85,7 @@ def train():
         'free_top': [],
         'free_bot': [],
         'load': [],
+        'energy': [],
         'fem_mae': [],
         'fem_max_err': [],
         'steps': []
@@ -114,6 +116,7 @@ def train():
         adam_history['free_top'].append(losses['free_top'].item())
         adam_history['free_bot'].append(losses['free_bot'].item())
         adam_history['load'].append(losses['load'].item())
+        adam_history['energy'].append(losses['energy'].item())
         
         if epoch % 100 == 0:
             current_time = time.time()
@@ -135,13 +138,14 @@ def train():
                 print(f"Epoch {epoch}: Total Loss: {loss_val.item():.6f} | "
                       f"PDE: {losses['pde']:.6f} | BC_sides: {losses['bc_sides']:.6f} | "
                       f"Free_top: {losses['free_top']:.6f} | Free_bot: {losses['free_bot']:.6f} | "
-                      f"Load: {losses['load']:.6f} | LR: {current_lr:.2e} | "
+                      f"Load: {losses['load']:.6f} | Energy: {losses['energy']:.6f} | LR: {current_lr:.2e} | "
                       f"FEM MAE: {mae:.6f} | Time: {step_duration:.4f}s")
             else:
                 print(f"Epoch {epoch}: Total Loss: {loss_val.item():.6f} | "
                       f"PDE: {losses['pde']:.6f} | BC_sides: {losses['bc_sides']:.6f} | "
                       f"Free_top: {losses['free_top']:.6f} | Free_bot: {losses['free_bot']:.6f} | "
-                      f"Load: {losses['load']:.6f} | LR: {current_lr:.2e} | Time: {step_duration:.4f}s")
+                      f"Load: {losses['load']:.6f} | Energy: {losses['energy']:.6f} | "
+                      f"LR: {current_lr:.2e} | Time: {step_duration:.4f}s")
             
     print(f"SOAP Pretraining Complete. Total Time: {time.time() - start_time:.2f}s")
     
@@ -181,6 +185,7 @@ def train():
         lbfgs_history['free_top'].append(losses['free_top'].item())
         lbfgs_history['free_bot'].append(losses['free_bot'].item())
         lbfgs_history['load'].append(losses['load'].item())
+        lbfgs_history['energy'].append(losses['energy'].item())
         
         # Compute FEM error and print
         if fem_available:
@@ -195,11 +200,13 @@ def train():
             print(f"L-BFGS Step {i}: Total Loss: {loss_val.item():.6e} | PDE: {losses['pde'].item():.6e} | "
                   f"BC_sides: {losses['bc_sides'].item():.6e} | Free_top: {losses['free_top'].item():.6e} | "
                   f"Free_bot: {losses['free_bot'].item():.6e} | Load: {losses['load'].item():.6e} | "
+                  f"Energy: {losses['energy'].item():.6e} | "
                   f"FEM MAE: {mae:.6e} | Time: {step_end - step_start:.4f}s")
         else:
             print(f"L-BFGS Step {i}: Total Loss: {loss_val.item():.6e} | PDE: {losses['pde'].item():.6e} | "
                   f"BC_sides: {losses['bc_sides'].item():.6e} | Free_top: {losses['free_top'].item():.6e} | "
                   f"Free_bot: {losses['free_bot'].item():.6e} | Load: {losses['load'].item():.6e} | "
+                  f"Energy: {losses['energy'].item():.6e} | "
                   f"Time: {step_end - step_start:.4f}s")
         
         # Save model at every L-BFGS step

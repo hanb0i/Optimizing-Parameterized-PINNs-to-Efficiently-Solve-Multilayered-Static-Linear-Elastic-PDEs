@@ -10,6 +10,15 @@ def sample_domain(n, z_min, z_max):
     z = torch.rand(n, 1) * (z_max - z_min) + z_min
     return torch.cat([x, y, z], dim=1)
 
+def sample_domain_under_patch(n, z_min, z_max):
+    """Sample interior points directly under the load patch."""
+    x_min, x_max = config.LOAD_PATCH_X
+    y_min, y_max = config.LOAD_PATCH_Y
+    x = torch.rand(n, 1) * (x_max - x_min) + x_min
+    y = torch.rand(n, 1) * (y_max - y_min) + y_min
+    z = torch.rand(n, 1) * (z_max - z_min) + z_min
+    return torch.cat([x, y, z], dim=1)
+
 def sample_domain_residual_based(n, z_min, z_max, prev_pts, prev_residuals):
     """Sample points weighted by residual magnitude.
     
@@ -99,20 +108,20 @@ def sample_boundaries_residual_based(n, z_min, z_max, prev_pts, prev_residuals):
     for i in range(n):
         pt = new_pts[i]
         if torch.abs(pt[0]) < 1e-6:  # x=0 face
-            new_pts[i, 1] += (torch.rand(1) - 0.5) * 2 * noise_scale * config.Ly
-            new_pts[i, 2] += (torch.rand(1) - 0.5) * 2 * noise_scale * (z_max - z_min)
+            new_pts[i, 1] += (torch.rand((), device=new_pts.device, dtype=new_pts.dtype) - 0.5) * 2 * noise_scale * config.Ly
+            new_pts[i, 2] += (torch.rand((), device=new_pts.device, dtype=new_pts.dtype) - 0.5) * 2 * noise_scale * (z_max - z_min)
             new_pts[i, 0] = 0.0
         elif torch.abs(pt[0] - config.Lx) < 1e-6:  # x=Lx face
-            new_pts[i, 1] += (torch.rand(1) - 0.5) * 2 * noise_scale * config.Ly
-            new_pts[i, 2] += (torch.rand(1) - 0.5) * 2 * noise_scale * (z_max - z_min)
+            new_pts[i, 1] += (torch.rand((), device=new_pts.device, dtype=new_pts.dtype) - 0.5) * 2 * noise_scale * config.Ly
+            new_pts[i, 2] += (torch.rand((), device=new_pts.device, dtype=new_pts.dtype) - 0.5) * 2 * noise_scale * (z_max - z_min)
             new_pts[i, 0] = config.Lx
         elif torch.abs(pt[1]) < 1e-6:  # y=0 face
-            new_pts[i, 0] += (torch.rand(1) - 0.5) * 2 * noise_scale * config.Lx
-            new_pts[i, 2] += (torch.rand(1) - 0.5) * 2 * noise_scale * (z_max - z_min)
+            new_pts[i, 0] += (torch.rand((), device=new_pts.device, dtype=new_pts.dtype) - 0.5) * 2 * noise_scale * config.Lx
+            new_pts[i, 2] += (torch.rand((), device=new_pts.device, dtype=new_pts.dtype) - 0.5) * 2 * noise_scale * (z_max - z_min)
             new_pts[i, 1] = 0.0
         elif torch.abs(pt[1] - config.Ly) < 1e-6:  # y=Ly face
-            new_pts[i, 0] += (torch.rand(1) - 0.5) * 2 * noise_scale * config.Lx
-            new_pts[i, 2] += (torch.rand(1) - 0.5) * 2 * noise_scale * (z_max - z_min)
+            new_pts[i, 0] += (torch.rand((), device=new_pts.device, dtype=new_pts.dtype) - 0.5) * 2 * noise_scale * config.Lx
+            new_pts[i, 2] += (torch.rand((), device=new_pts.device, dtype=new_pts.dtype) - 0.5) * 2 * noise_scale * (z_max - z_min)
             new_pts[i, 1] = config.Ly
     
     # Clamp
@@ -266,9 +275,16 @@ def get_data(prev_data=None, residuals=None):
     # Decide whether to use residual-based sampling (50% uniform, 50% residual-based)
     use_residual = (prev_data is not None and residuals is not None)
     
+    n_patch = int(config.N_INTERIOR * config.UNDER_PATCH_FRACTION)
+    if n_patch < 0:
+        n_patch = 0
+    if n_patch > config.N_INTERIOR:
+        n_patch = config.N_INTERIOR
+    n_interior = config.N_INTERIOR - n_patch
+    
     if use_residual:
-        n_uniform = config.N_INTERIOR // 2
-        n_residual = config.N_INTERIOR - n_uniform
+        n_uniform = n_interior // 2
+        n_residual = n_interior - n_uniform
         
         # Interior: half uniform, half residual-based
         interior_uniform = sample_domain(n_uniform, z_min, z_max)
@@ -277,6 +293,9 @@ def get_data(prev_data=None, residuals=None):
             prev_data['interior'], residuals['interior']
         )
         interior = torch.cat([interior_uniform, interior_residual], dim=0)
+        if n_patch > 0:
+            interior_patch = sample_domain_under_patch(n_patch, z_min, z_max)
+            interior = torch.cat([interior, interior_patch], dim=0)
         
         # BC Sides: half uniform, half residual-based
         n_uniform_bc = config.N_BOUNDARY // 2
@@ -322,7 +341,12 @@ def get_data(prev_data=None, residuals=None):
         
     else:
         # Uniform sampling (initial or when no residuals provided)
-        interior = sample_domain(config.N_INTERIOR, z_min, z_max)
+        interior_uniform = sample_domain(n_interior, z_min, z_max)
+        if n_patch > 0:
+            interior_patch = sample_domain_under_patch(n_patch, z_min, z_max)
+            interior = torch.cat([interior_uniform, interior_patch], dim=0)
+        else:
+            interior = interior_uniform
         bc_sides = sample_boundaries(config.N_BOUNDARY, z_min, z_max)
         top_load = sample_top_load(config.N_BOUNDARY)
         top_free = sample_top_free(config.N_BOUNDARY)
