@@ -38,8 +38,8 @@ def train():
         precondition_frequency=config.SOAP_PRECONDITION_FREQUENCY,
     )
     
-    # Learning rate scheduler: reduce by 0.3 every epochs_adam//5 steps
-    scheduler = optim.lr_scheduler.StepLR(optimizer_soap, step_size=config.EPOCHS_ADAM//5, gamma=0.3)
+    # Learning rate scheduler: reduce by 0.3 every epochs_soap//5 steps
+    scheduler = optim.lr_scheduler.StepLR(optimizer_soap, step_size=config.EPOCHS_SOAP//5, gamma=0.3)
     
     # Load FEM data for comparison
     print("Loading FEM solution for comparison...")
@@ -65,8 +65,7 @@ def train():
     training_data = data.get_data()
     
     # History - store all loss components separately for each optimizer.
-    # Keep the "adam" key for downstream plotting compatibility.
-    adam_history = {
+    soap_history = {
         'total': [],
         'pde': [],
         'bc_sides': [],
@@ -78,7 +77,7 @@ def train():
         'epochs': []
     }
     
-    lbfgs_history = {
+    ssbfgs_history = {
         'total': [],
         'pde': [],
         'bc_sides': [],
@@ -94,7 +93,7 @@ def train():
     start_time = time.time()
     last_time = start_time
     
-    for epoch in range(config.EPOCHS_ADAM):
+    for epoch in range(config.EPOCHS_SOAP):
         optimizer_soap.zero_grad()
         
         # Periodic data refresh with residual-based adaptive sampling
@@ -109,12 +108,12 @@ def train():
         optimizer_soap.step()
         scheduler.step()  # Update learning rate
         
-        adam_history['total'].append(loss_val.item())
-        adam_history['pde'].append(losses['pde'].item())
-        adam_history['bc_sides'].append(losses['bc_sides'].item())
-        adam_history['free_top'].append(losses['free_top'].item())
-        adam_history['free_bot'].append(losses['free_bot'].item())
-        adam_history['load'].append(losses['load'].item())
+        soap_history['total'].append(loss_val.item())
+        soap_history['pde'].append(losses['pde'].item())
+        soap_history['bc_sides'].append(losses['bc_sides'].item())
+        soap_history['free_top'].append(losses['free_top'].item())
+        soap_history['free_bot'].append(losses['free_bot'].item())
+        soap_history['load'].append(losses['load'].item())
         
         if epoch % 100 == 0:
             current_time = time.time()
@@ -129,9 +128,9 @@ def train():
                     diff = np.abs(u_pinn_flat - u_fea_flat)
                     mae = np.mean(diff)
                     max_err = np.max(diff)
-                    adam_history['fem_mae'].append(mae)
-                    adam_history['fem_max_err'].append(max_err)
-                    adam_history['epochs'].append(epoch)
+                    soap_history['fem_mae'].append(mae)
+                    soap_history['fem_max_err'].append(max_err)
+                    soap_history['epochs'].append(epoch)
                     
                 print(f"Epoch {epoch}: Total Loss: {loss_val.item():.6f} | "
                       f"PDE: {losses['pde']:.6f} | BC_sides: {losses['bc_sides']:.6f} | "
@@ -166,7 +165,7 @@ def train():
         grad_flat = torch.cat([g.reshape(-1) for g in grads])
         return float(loss_val.item()), grad_flat.detach().cpu().numpy().astype(np.float64, copy=False)
 
-    num_bfgs_steps = config.EPOCHS_LBFGS
+    num_bfgs_steps = config.EPOCHS_SSBFGS
     print(f"Running {num_bfgs_steps} SSBFGS outer steps.")
     print("Resampling with residual-based adaptive sampling each outer step.")
 
@@ -213,12 +212,12 @@ def train():
 
         # Compute losses for logging
         loss_val, losses = physics.compute_loss(pinn, training_data, device)
-        lbfgs_history['total'].append(loss_val.item())
-        lbfgs_history['pde'].append(losses['pde'].item())
-        lbfgs_history['bc_sides'].append(losses['bc_sides'].item())
-        lbfgs_history['free_top'].append(losses['free_top'].item())
-        lbfgs_history['free_bot'].append(losses['free_bot'].item())
-        lbfgs_history['load'].append(losses['load'].item())
+        ssbfgs_history['total'].append(loss_val.item())
+        ssbfgs_history['pde'].append(losses['pde'].item())
+        ssbfgs_history['bc_sides'].append(losses['bc_sides'].item())
+        ssbfgs_history['free_top'].append(losses['free_top'].item())
+        ssbfgs_history['free_bot'].append(losses['free_bot'].item())
+        ssbfgs_history['load'].append(losses['load'].item())
 
         # Compute FEM error and print
         if fem_available:
@@ -227,9 +226,9 @@ def train():
                 diff = np.abs(u_pinn_flat - u_fea_flat)
                 mae = np.mean(diff)
                 max_err = np.max(diff)
-                lbfgs_history['fem_mae'].append(mae)
-                lbfgs_history['fem_max_err'].append(max_err)
-                lbfgs_history['steps'].append(i)
+                ssbfgs_history['fem_mae'].append(mae)
+                ssbfgs_history['fem_max_err'].append(max_err)
+                ssbfgs_history['steps'].append(i)
             print(f"SSBFGS Step {i}: Total Loss: {loss_val.item():.6e} | PDE: {losses['pde'].item():.6e} | "
                   f"BC_sides: {losses['bc_sides'].item():.6e} | Free_top: {losses['free_top'].item():.6e} | "
                   f"Free_bot: {losses['free_bot'].item():.6e} | Load: {losses['load'].item():.6e} | "
@@ -245,7 +244,7 @@ def train():
             
     # Save Model and Loss Histories
     torch.save(pinn.state_dict(), "pinn_model.pth")
-    loss_history = {'adam': adam_history, 'lbfgs': lbfgs_history}
+    loss_history = {'soap': soap_history, 'ssbfgs': ssbfgs_history}
     np.save("loss_history.npy", loss_history)
     print("Model saved.")
     return pinn
