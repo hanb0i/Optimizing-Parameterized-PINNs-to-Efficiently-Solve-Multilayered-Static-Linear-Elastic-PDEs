@@ -33,7 +33,15 @@ LOAD_PATCH_Y = [Ly/3, 2*Ly/3]  # [0.333, 0.667]
 # --- Training Hyperparameters ---
 LEARNING_RATE = 1e-3
 EPOCHS_ADAM = 2000 # Increased to enforce load and reduce underfit
-EPOCHS_LBFGS = 30 # Increased from 500. Resampling here. Should help convergence. 
+EPOCHS_LBFGS = 30 # SSBFGS outer steps; resampling here should help convergence.
+# SOAP optimizer
+SOAP_PRECONDITION_FREQUENCY = 10
+# SciPy self-scaled BFGS optimizer (from Optimizing_the_Optimizer_PINNs)
+SS_BFGS_METHOD = "BFGS"
+SS_BFGS_VARIANT = "SSBFGS_AB"  # Options include BFGS, SSBFGS_AB, SSBFGS_OL, SSBroyden1, SSBroyden2.
+SS_BFGS_MAXITER = 1
+SS_BFGS_GTOL = 0.0
+SS_BFGS_INITIAL_SCALE = False
 #Plot Physical Residuals Every N Epochs every 100 epochs. 
 WEIGHTS = {
     'pde': 1.0,    # Increased from 1.0
