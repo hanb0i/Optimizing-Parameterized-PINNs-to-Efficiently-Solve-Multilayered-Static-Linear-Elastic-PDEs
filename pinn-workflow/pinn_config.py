@@ -26,7 +26,7 @@ LOAD_PATCH_Y = [Ly/3, 2*Ly/3]
 
 # --- Training Hyperparameters ---
 LEARNING_RATE = 1e-3
-EPOCHS_SOAP = 2000
+EPOCHS_SOAP = 1000
 EPOCHS_SSBFGS = 30
 
 # SOAP optimizer
@@ -39,16 +39,22 @@ SS_BFGS_MAXITER = 1
 SS_BFGS_GTOL = 0.0
 SS_BFGS_INITIAL_SCALE = False
 
+
 # Loss Weights
 WEIGHTS = {
     'pde': 1.0,
     'bc': 1.0,
     'load': 1.0,
+    'data': 1.0,
 }
 
 # Sampling
 N_INTERIOR = 10000
 N_BOUNDARY = 2000
+N_DATA = 1000  # Number of sparse FEA data points
+
+# Mini-batching
+BATCH_SIZE = 4096
 
 # Output Scaling
-OUTPUT_SCALE = 3.55
+OUTPUT_SCALE = 1.00

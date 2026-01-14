@@ -64,56 +64,95 @@ def train():
     # Data Container
     training_data = data.get_data()
     
+    # Load Hybrid Training Data (Sparse FEA samples)
+    x_fea_train, u_fea_train = data.get_fea_samples(config.N_DATA)
+    if len(x_fea_train) > 0:
+        print(f"Loaded {len(x_fea_train)} sparse FEA points for hybrid training.")
+    
+    # Initialize Dataset and DataLoader
+    dataset = data.PINNDataset(training_data, fea_data=(x_fea_train, u_fea_train))
+    dataloader = torch.utils.data.DataLoader(dataset, batch_size=config.BATCH_SIZE, shuffle=True)
+    
     # History - store all loss components separately for each optimizer.
     soap_history = {
-        'total': [],
-        'pde': [],
-        'bc_sides': [],
-        'free_top': [],
-        'free_bot': [],
-        'load': [],
-        'fem_mae': [],
-        'fem_max_err': [],
-        'epochs': []
+        'total': [], 'pde': [], 'bc_sides': [], 'free_top': [], 'free_bot': [], 'load': [], 'data': [],
+        'fem_mae': [], 'fem_max_err': [], 'epochs': []
     }
     
     ssbfgs_history = {
-        'total': [],
-        'pde': [],
-        'bc_sides': [],
-        'free_top': [],
-        'free_bot': [],
-        'load': [],
-        'fem_mae': [],
-        'fem_max_err': [],
-        'steps': []
+        'total': [], 'pde': [], 'bc_sides': [], 'free_top': [], 'free_bot': [], 'load': [], 'data': [],
+        'fem_mae': [], 'fem_max_err': [], 'steps': []
     }
     
-    print("Starting SOAP Pretraining...")
+    print("Starting SOAP Pretraining (Mini-batch Mode)...")
     start_time = time.time()
     last_time = start_time
     
     for epoch in range(config.EPOCHS_SOAP):
-        optimizer_soap.zero_grad()
         
         # Periodic data refresh with residual-based adaptive sampling
         if epoch % 500 == 0 and epoch > 0:
-            # Compute residuals for adaptive sampling
             residuals = physics.compute_residuals(pinn, training_data, device)
             training_data = data.get_data(prev_data=training_data, residuals=residuals)
+            
+            # Re-initialize dataset/loader with new samples (keep same FEA data)
+            dataset = data.PINNDataset(training_data, fea_data=(x_fea_train, u_fea_train))
+            dataloader = torch.utils.data.DataLoader(dataset, batch_size=config.BATCH_SIZE, shuffle=True)
             print(f"  Resampled with residual-based adaptive sampling at epoch {epoch}")
             
-        loss_val, losses = physics.compute_loss(pinn, training_data, device)
-        loss_val.backward()
-        optimizer_soap.step()
-        scheduler.step()  # Update learning rate
+        # --- Mini-batch Loop ---
+        epoch_loss = 0.0
+        epoch_losses = {}
+        n_batches = 0
         
-        soap_history['total'].append(loss_val.item())
-        soap_history['pde'].append(losses['pde'].item())
-        soap_history['bc_sides'].append(losses['bc_sides'].item())
-        soap_history['free_top'].append(losses['free_top'].item())
-        soap_history['free_bot'].append(losses['free_bot'].item())
-        soap_history['load'].append(losses['load'].item())
+        for batch in dataloader:
+            optimizer_soap.zero_grad()
+            
+            # Transfer batch to device inside compute_loss (it expects dict of tensors now)
+            # Actually physics.compute_loss assumes dict of *lists* for 'interior' etc. if coming from get_data
+            # BUT our dataset returns tensors directly. We need to adapt physics.py or ensure batch works.
+            # physics.py: x_int = data['interior'][0] -> This implies it expects a list!
+            # Our PINNDataset returns tensors.
+            # Workaround: Wrap tensors in list to make physics.py happy, OR modify physics.py
+            # Modifying physics.py to handle both is cleaner, but for now let's wrap here.
+            
+            # Wait, `physics.compute_loss` does: `x_int = data['interior'][0].to(device)`.
+            # If `data['interior']` is a tensor (batch), `[0]` gets the first element! That's bad.
+            # I MUST check physics.py again.
+            
+            # Let's fix physics.py in the next step if strictly needed, but better to fix here if possible?
+            # No, `dataset` returns a batch of tensors.
+            # If I pass `{'interior': [batch_interior], ...}` it works.
+            
+            batch_data = {}
+            for k, v in batch.items():
+                if k in ['interior', 'sides']:
+                    batch_data[k] = [v] # Wrap in list to match physics.py expectation
+                else:
+                    batch_data[k] = v
+            
+            loss_val, losses = physics.compute_loss(pinn, batch_data, device)
+            loss_val.backward()
+            optimizer_soap.step()
+            
+            epoch_loss += loss_val.item()
+            for k, v in losses.items():
+                if k not in epoch_losses:
+                    epoch_losses[k] = 0.0
+                epoch_losses[k] += v.item()
+            n_batches += 1
+            
+        scheduler.step()  # Update learning rate per epoch
+        
+        # Average losses for history
+        avg_loss = epoch_loss / n_batches
+        soap_history['total'].append(avg_loss)
+        for k in epoch_losses:
+            if k in soap_history:
+                soap_history[k].append(epoch_losses[k] / n_batches)
+        if 'data' not in epoch_losses: # If data loss wasn't computed (e.g. empty)
+             if 'data' in soap_history: soap_history['data'].append(0.0)
+
         
         if epoch % 100 == 0:
             current_time = time.time()
@@ -121,27 +160,27 @@ def train():
             last_time = current_time
             current_lr = scheduler.get_last_lr()[0]
             
+            avg_pde = epoch_losses['pde'] / n_batches
+            avg_load = epoch_losses['load'] / n_batches
+            avg_data = epoch_losses.get('data', 0.0) / n_batches
+            
             # Compute FEM error every 100 epochs
             if fem_available:
                 with torch.no_grad():
                     u_pinn_flat = pinn(pts_fea_tensor, 0).cpu().numpy()
                     diff = np.abs(u_pinn_flat - u_fea_flat)
                     mae = np.mean(diff)
-                    max_err = np.max(diff)
                     soap_history['fem_mae'].append(mae)
-                    soap_history['fem_max_err'].append(max_err)
+                    soap_history['fem_max_err'].append(np.max(diff))
                     soap_history['epochs'].append(epoch)
                     
-                print(f"Epoch {epoch}: Total Loss: {loss_val.item():.6f} | "
-                      f"PDE: {losses['pde']:.6f} | BC_sides: {losses['bc_sides']:.6f} | "
-                      f"Free_top: {losses['free_top']:.6f} | Free_bot: {losses['free_bot']:.6f} | "
-                      f"Load: {losses['load']:.6f} | LR: {current_lr:.2e} | "
+                print(f"Epoch {epoch}: Loss: {avg_loss:.6f} | "
+                      f"PDE: {avg_pde:.6f} | Data: {avg_data:.6f} | LR: {current_lr:.2e} | "
                       f"FEM MAE: {mae:.6f} | Time: {step_duration:.4f}s")
             else:
-                print(f"Epoch {epoch}: Total Loss: {loss_val.item():.6f} | "
-                      f"PDE: {losses['pde']:.6f} | BC_sides: {losses['bc_sides']:.6f} | "
-                      f"Free_top: {losses['free_top']:.6f} | Free_bot: {losses['free_bot']:.6f} | "
-                      f"Load: {losses['load']:.6f} | LR: {current_lr:.2e} | Time: {step_duration:.4f}s")
+                print(f"Epoch {epoch}: Loss: {avg_loss:.6f} | "
+                      f"PDE: {avg_pde:.6f} | Data: {avg_data:.6f} | "
+                      f"LR: {current_lr:.2e} | Time: {step_duration:.4f}s")
             
     print(f"SOAP Pretraining Complete. Total Time: {time.time() - start_time:.2f}s")
     
@@ -165,14 +204,14 @@ def train():
         grad_flat = torch.cat([g.reshape(-1) for g in grads])
         return float(loss_val.item()), grad_flat.detach().cpu().numpy().astype(np.float64, copy=False)
 
-    num_bfgs_steps = config.EPOCHS_SSBFGS
-    print(f"Running {num_bfgs_steps} SSBFGS outer steps.")
+    num_ssbfgs_steps = config.EPOCHS_SSBFGS
+    print(f"Running {num_ssbfgs_steps} SSBFGS outer steps.")
     print("Resampling with residual-based adaptive sampling each outer step.")
 
     initial_weights = parameters_to_vector(pinn.parameters()).detach().cpu().numpy().astype(np.float64, copy=False)
     hess_inv0 = np.eye(initial_weights.size, dtype=np.float64)
 
-    for i in range(num_bfgs_steps):
+    for i in range(num_ssbfgs_steps):
         # Resample collocation points with residual-based adaptive sampling
         residuals = physics.compute_residuals(pinn, training_data, device)
         training_data = data.get_data(prev_data=training_data, residuals=residuals)
