@@ -8,12 +8,9 @@ from scipy.linalg import cholesky, LinAlgError
 from scipy.optimize import minimize
 from torch.nn.utils import parameters_to_vector, vector_to_parameters
 
-import sys
-import os
-sys.path.append(os.path.dirname(__file__))
-
 import soap
 import scipy_patch
+
 import pinn_config as config
 import data
 import model
@@ -28,10 +25,11 @@ def train():
         device = torch.device('cpu')
     print(f"Using device: {device}")
     
+    # Initialize Model
     pinn = model.MultiLayerPINN().to(device)
     print(pinn)
     
-    # SOAP Optimizer with learning rate scheduler
+    # Initialize Optimizers
     optimizer_soap = soap.SOAP(
         pinn.parameters(),
         lr=config.LEARNING_RATE,
@@ -39,18 +37,14 @@ def train():
         weight_decay=0.0,
         precondition_frequency=config.SOAP_PRECONDITION_FREQUENCY,
     )
-    scheduler = optim.lr_scheduler.StepLR(optimizer_soap, step_size=config.EPOCHS_SOAP//5, gamma=0.3)
     
-    # Initial Data
-    training_data = data.get_data()
+    # Learning rate scheduler: reduce by 0.3 every epochs_soap//5 steps
+    scheduler = optim.lr_scheduler.StepLR(optimizer_soap, step_size=config.EPOCHS_SOAP//5, gamma=0.3)
     
     # Load FEM data for comparison
     print("Loading FEM solution for comparison...")
     try:
-        fea_path = "fea_solution.npy"
-        if not os.path.exists(fea_path):
-            fea_path = os.path.join(os.path.dirname(__file__), "..", "fea_solution.npy")
-        fem_data = np.load(fea_path, allow_pickle=True).item()
+        fem_data = np.load("fea_solution.npy", allow_pickle=True).item()
         X_fea = fem_data['x']
         Y_fea = fem_data['y']
         Z_fea = fem_data['z']
@@ -63,10 +57,14 @@ def train():
         
         fem_available = True
         print(f"FEM data loaded: {X_fea.shape}")
-    except Exception as e:
-        print(f"FEM data not available: {e}")
+    except FileNotFoundError:
+        print("FEM solution not found. Training without FEM comparison.")
         fem_available = False
     
+    # Data Container
+    training_data = data.get_data()
+    
+    # History - store all loss components separately for each optimizer.
     soap_history = {
         'total': [],
         'pde': [],
@@ -167,14 +165,14 @@ def train():
         grad_flat = torch.cat([g.reshape(-1) for g in grads])
         return float(loss_val.item()), grad_flat.detach().cpu().numpy().astype(np.float64, copy=False)
 
-    num_ssbfgs_steps = config.EPOCHS_SSBFGS
-    print(f"Running {num_ssbfgs_steps} SSBFGS outer steps.")
+    num_bfgs_steps = config.EPOCHS_SSBFGS
+    print(f"Running {num_bfgs_steps} SSBFGS outer steps.")
     print("Resampling with residual-based adaptive sampling each outer step.")
 
     initial_weights = parameters_to_vector(pinn.parameters()).detach().cpu().numpy().astype(np.float64, copy=False)
     hess_inv0 = np.eye(initial_weights.size, dtype=np.float64)
 
-    for i in range(num_ssbfgs_steps):
+    for i in range(num_bfgs_steps):
         # Resample collocation points with residual-based adaptive sampling
         residuals = physics.compute_residuals(pinn, training_data, device)
         training_data = data.get_data(prev_data=training_data, residuals=residuals)

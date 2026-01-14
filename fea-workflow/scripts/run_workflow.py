@@ -37,30 +37,13 @@ def get_cfg_from_pinn_config():
             'E': pinn_config.E_vals[0], 
             'nu': pinn_config.nu_vals[0]
         },
-        'layers': {
-            'interfaces': pinn_config.Layer_Interfaces,
-            'E': pinn_config.E_vals,
-            'nu': pinn_config.nu_vals
-        },
     }
 
 def main():
     print("=== Phase 1: Training PINN via pinn-workflow ===")
-    
-    # Define Callback for Visualization
-    cfg = get_cfg_from_pinn_config()
-    def visualization_callback(tag, model, device):
-        print(f"Creating visualization for {tag}...")
-        save_path = os.path.dirname(__file__)
-        plot_pinn_results(model, cfg, device, save_path=save_path)
-        # Rename so we don't overwrite
-        os.rename(os.path.join(save_path, "pinn_top.png"), 
-                  os.path.join(save_path, f"pinn_top_{tag}.png"))
-        print(f"Saved pinn_top_{tag}.png")
-
     # Call the external training script
     # This will use pinn-workflow/config.py
-    pinn_model = pinn_train.train(callback=visualization_callback)
+    pinn_model = pinn_train.train()
     
     # Plot Loss History
     try:
@@ -83,17 +66,6 @@ def main():
     
     plot_pinn_results(pinn_model, cfg, device, save_path=os.path.dirname(__file__))
     plot_comparison(u_fea, (x, y, z), pinn_model, cfg, device, save_path=os.path.dirname(__file__))
-    uz_fea_top = u_fea[:, :, -1, 2]
-    X_fea, Y_fea = np.meshgrid(x, y, indexing='ij')
-    pts_top = np.stack([X_fea.ravel(), Y_fea.ravel(), np.ones_like(X_fea.ravel())*cfg['geometry']['H']], axis=1)
-    pts_top_t = torch.tensor(pts_top, dtype=torch.float32).to(device)
-    with torch.no_grad():
-        u_pinn = pinn_model(pts_top_t, 2).cpu().numpy()
-        uz_pinn_top = u_pinn[:, 2].reshape(X_fea.shape)
-    diff = np.abs(uz_fea_top - uz_pinn_top)
-    denom = np.maximum(np.abs(uz_fea_top), 1e-8)
-    percent_error = np.mean(diff / denom) * 100.0
-    print(f"Mean % Error (Top u_z): {percent_error:.2f}% (lower is better)")
     
     print("Workflow Complete. Comparison plots generated.")
 

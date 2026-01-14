@@ -1,3 +1,4 @@
+
 import torch
 import numpy as np
 
@@ -48,3 +49,6 @@ WEIGHTS = {
 # Sampling
 N_INTERIOR = 10000
 N_BOUNDARY = 2000
+
+# Output Scaling
+OUTPUT_SCALE = 3.55
