@@ -97,7 +97,13 @@ def divergence(sigma, x):
         
     return div
 
-def compute_loss(model, data, device):
+def compute_loss(model, data, device, weights=None):
+    if weights is None:
+        weights = config.WEIGHTS
+    pde_weight = weights.get('pde', config.WEIGHTS['pde'])
+    bc_weight = weights.get('bc', config.WEIGHTS.get('bc', 1.0))
+    load_weight = weights.get('load', config.WEIGHTS.get('load', 1.0))
+
     total_loss = 0
     losses = {}
     
@@ -118,7 +124,7 @@ def compute_loss(model, data, device):
     
     pde_loss = torch.mean(residual**2)
     losses['pde'] = pde_loss
-    total_loss += config.WEIGHTS['pde'] * pde_loss
+    total_loss += pde_weight * pde_loss
     
     # --- 2. Dirichlet BCs (Clamped Sides) ---
     x_side = data['sides'][0].to(device)
@@ -127,7 +133,7 @@ def compute_loss(model, data, device):
     bc_loss = torch.mean(u_side**2)
         
     losses['bc_sides'] = bc_loss
-    total_loss += config.WEIGHTS['bc'] * bc_loss
+    total_loss += bc_weight * bc_loss
     
     # --- 3. Traction BCs (Top & Bottom) ---
     # Top Loaded
@@ -157,7 +163,7 @@ def compute_loss(model, data, device):
     
     loss_load = torch.mean((T - target)**2)
     losses['load'] = loss_load
-    total_loss += config.WEIGHTS['load'] * loss_load
+    total_loss += load_weight * loss_load
     
     # Top Free
     x_top_free = data['top_free'].to(device)
@@ -170,7 +176,7 @@ def compute_loss(model, data, device):
     
     loss_free = torch.mean(T_free**2)
     losses['free_top'] = loss_free
-    total_loss += config.WEIGHTS['bc'] * loss_free # Use BC weight
+    total_loss += bc_weight * loss_free # Use BC weight
     
     # Bottom Free
     x_bot = data['bottom'].to(device)
@@ -186,7 +192,7 @@ def compute_loss(model, data, device):
     
     loss_bot = torch.mean(T_bot**2)
     losses['free_bot'] = loss_bot
-    total_loss += config.WEIGHTS['bc'] * loss_bot
+    total_loss += bc_weight * loss_bot
     
     # No interface continuity for single layer
     

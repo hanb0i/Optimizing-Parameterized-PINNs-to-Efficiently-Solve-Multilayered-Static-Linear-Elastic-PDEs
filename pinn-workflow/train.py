@@ -3,13 +3,18 @@ import torch
 import torch.optim as optim
 import numpy as np
 import time
-import os
+
+from scipy.linalg import cholesky, LinAlgError
+from scipy.optimize import minimize
+from torch.nn.utils import parameters_to_vector, vector_to_parameters
+
+import soap
+import scipy_patch
 
 import pinn_config as config
 import data
 import model
 import physics
-import matplotlib.pyplot as plt
 
 def train(callback=None):
     if torch.cuda.is_available():
@@ -25,10 +30,16 @@ def train(callback=None):
     print(pinn)
     
     # Initialize Optimizers
-    optimizer_adam = optim.Adam(pinn.parameters(), lr=config.LEARNING_RATE)
+    optimizer_soap = soap.SOAP(
+        pinn.parameters(),
+        lr=config.LEARNING_RATE,
+        betas=(0.95, 0.95),
+        weight_decay=0.0,
+        precondition_frequency=config.SOAP_PRECONDITION_FREQUENCY,
+    )
     
-    # Learning rate scheduler: reduce by 0.3 every epochs_adam//5 steps
-    scheduler = optim.lr_scheduler.StepLR(optimizer_adam, step_size=config.EPOCHS_ADAM//5, gamma=0.3)
+    # Learning rate scheduler: reduce by 0.3 every epochs_soap//5 steps
+    scheduler = optim.lr_scheduler.StepLR(optimizer_soap, step_size=config.EPOCHS_SOAP//5, gamma=0.3)
     
     # Load FEM data for comparison
     print("Loading FEM solution for comparison...")
@@ -56,8 +67,8 @@ def train(callback=None):
     # Data Container
     training_data = data.get_data()
     
-    # History - store all loss components separately for each optimizer
-    adam_history = {
+    # History - store all loss components separately for each optimizer.
+    soap_history = {
         'total': [],
         'pde': [],
         'bc_sides': [],
@@ -69,7 +80,7 @@ def train(callback=None):
         'epochs': []
     }
     
-    lbfgs_history = {
+    ssbfgs_history = {
         'total': [],
         'pde': [],
         'bc_sides': [],
@@ -81,12 +92,12 @@ def train(callback=None):
         'steps': []
     }
     
-    print("Starting Adam Training...")
+    print("Starting SOAP Pretraining...")
     start_time = time.time()
     last_time = start_time
     
-    for epoch in range(config.EPOCHS_ADAM):
-        optimizer_adam.zero_grad()
+    for epoch in range(config.EPOCHS_SOAP):
+        optimizer_soap.zero_grad()
         
         # Periodic data refresh with residual-based adaptive sampling
         if epoch % 500 == 0 and epoch > 0:
@@ -97,15 +108,15 @@ def train(callback=None):
             
         loss_val, losses = physics.compute_loss(pinn, training_data, device)
         loss_val.backward()
-        optimizer_adam.step()
+        optimizer_soap.step()
         scheduler.step()  # Update learning rate
         
-        adam_history['total'].append(loss_val.item())
-        adam_history['pde'].append(losses['pde'].item())
-        adam_history['bc_sides'].append(losses['bc_sides'].item())
-        adam_history['free_top'].append(losses['free_top'].item())
-        adam_history['free_bot'].append(losses['free_bot'].item())
-        adam_history['load'].append(losses['load'].item())
+        soap_history['total'].append(loss_val.item())
+        soap_history['pde'].append(losses['pde'].item())
+        soap_history['bc_sides'].append(losses['bc_sides'].item())
+        soap_history['free_top'].append(losses['free_top'].item())
+        soap_history['free_bot'].append(losses['free_bot'].item())
+        soap_history['load'].append(losses['load'].item())
         
         if epoch % 100 == 0:
             current_time = time.time()
@@ -120,9 +131,9 @@ def train(callback=None):
                     diff = np.abs(u_pinn_flat - u_fea_flat)
                     mae = np.mean(diff)
                     max_err = np.max(diff)
-                    adam_history['fem_mae'].append(mae)
-                    adam_history['fem_max_err'].append(max_err)
-                    adam_history['epochs'].append(epoch)
+                    soap_history['fem_mae'].append(mae)
+                    soap_history['fem_max_err'].append(max_err)
+                    soap_history['epochs'].append(epoch)
                     
                 print(f"Epoch {epoch}: Total Loss: {loss_val.item():.6f} | "
                       f"PDE: {losses['pde']:.6f} | BC_sides: {losses['bc_sides']:.6f} | "
@@ -135,37 +146,65 @@ def train(callback=None):
                       f"Free_top: {losses['free_top']:.6f} | Free_bot: {losses['free_bot']:.6f} | "
                       f"Load: {losses['load']:.6f} | LR: {current_lr:.2e} | Time: {step_duration:.4f}s")
             
+<<<<<<< HEAD
         # Visualization Callback (Every 500 epochs)
         if callback and epoch % 500 == 0:
             callback(f"adam_epoch_{epoch}", pinn, device)
             
     print(f"Adam Training Complete. Total Time: {time.time() - start_time:.2f}s")
+=======
+    print(f"SOAP Pretraining Complete. Total Time: {time.time() - start_time:.2f}s")
+>>>>>>> 3176abcf323e43483e790d268adaa1838f1907f2
     
-    # L-BFGS Training
-    print("Starting L-BFGS Training...")
-    optimizer_lbfgs = optim.LBFGS(pinn.parameters(), 
-                                  max_iter=1000, 
-                                  history_size=50, 
-                                  line_search_fn="strong_wolfe")
-        
-    num_lbfgs_steps = config.EPOCHS_LBFGS
-    print(f"Running {num_lbfgs_steps} L-BFGS outer steps.")
-    print(f"Resampling with residual-based adaptive sampling each outer step.")
-    
-    for i in range(num_lbfgs_steps):
+    # SciPy self-scaled BFGS fine-tuning
+    print(f"Starting SciPy SSBFGS Fine-Tuning ({config.SS_BFGS_VARIANT})...")
+    if scipy_patch.ensure_scipy_bfgs_patch():
+        print("Applied local SciPy optimize patch for method_bfgs support.")
+
+    param_device = next(pinn.parameters()).device
+    param_dtype = next(pinn.parameters()).dtype
+
+    def _set_params(flat_params):
+        flat_tensor = torch.as_tensor(flat_params, dtype=param_dtype, device=param_device)
+        with torch.no_grad():
+            vector_to_parameters(flat_tensor, pinn.parameters())
+
+    def loss_and_grad(flat_params):
+        _set_params(flat_params)
+        loss_val, _ = physics.compute_loss(pinn, training_data, device)
+        grads = torch.autograd.grad(loss_val, pinn.parameters(), create_graph=False, retain_graph=False)
+        grad_flat = torch.cat([g.reshape(-1) for g in grads])
+        return float(loss_val.item()), grad_flat.detach().cpu().numpy().astype(np.float64, copy=False)
+
+    num_bfgs_steps = config.EPOCHS_SSBFGS
+    print(f"Running {num_bfgs_steps} SSBFGS outer steps.")
+    print("Resampling with residual-based adaptive sampling each outer step.")
+
+    initial_weights = parameters_to_vector(pinn.parameters()).detach().cpu().numpy().astype(np.float64, copy=False)
+    hess_inv0 = np.eye(initial_weights.size, dtype=np.float64)
+
+    for i in range(num_bfgs_steps):
         # Resample collocation points with residual-based adaptive sampling
         residuals = physics.compute_residuals(pinn, training_data, device)
         training_data = data.get_data(prev_data=training_data, residuals=residuals)
-        
-        def closure():
-            optimizer_lbfgs.zero_grad()
-            loss_val, losses = physics.compute_loss(pinn, training_data, device)
-            loss_val.backward()
-            return loss_val
-        
+
         step_start = time.time()
-        loss_val = optimizer_lbfgs.step(closure)
+        result = minimize(
+            loss_and_grad,
+            initial_weights,
+            method=config.SS_BFGS_METHOD,
+            jac=True,
+            options={
+                'maxiter': config.SS_BFGS_MAXITER,
+                'gtol': config.SS_BFGS_GTOL,
+                'hess_inv0': hess_inv0,
+                'method_bfgs': config.SS_BFGS_VARIANT,
+                'initial_scale': config.SS_BFGS_INITIAL_SCALE,
+            },
+            tol=0.0,
+        )
         step_end = time.time()
+<<<<<<< HEAD
         
 <<<<<<< HEAD
         # Print every step to see progress since total steps is small (5)
@@ -175,15 +214,34 @@ def train(callback=None):
         if callback and i % 10 == 0:
             callback(f"lbfgs_step_{i}", pinn, device)
 =======
+=======
+
+        if not result.success:
+            print(f"  SciPy minimize status {result.status}: {result.message}")
+
+        initial_weights = result.x
+        _set_params(initial_weights)
+
+        hess_inv0 = getattr(result, "hess_inv", None)
+        if isinstance(hess_inv0, np.ndarray):
+            hess_inv0 = 0.5 * (hess_inv0 + hess_inv0.T)
+            try:
+                cholesky(hess_inv0)
+            except LinAlgError:
+                hess_inv0 = np.eye(len(initial_weights), dtype=np.float64)
+        else:
+            hess_inv0 = np.eye(len(initial_weights), dtype=np.float64)
+
+>>>>>>> 3176abcf323e43483e790d268adaa1838f1907f2
         # Compute losses for logging
-        _, losses = physics.compute_loss(pinn, training_data, device)
-        lbfgs_history['total'].append(loss_val.item())
-        lbfgs_history['pde'].append(losses['pde'].item())
-        lbfgs_history['bc_sides'].append(losses['bc_sides'].item())
-        lbfgs_history['free_top'].append(losses['free_top'].item())
-        lbfgs_history['free_bot'].append(losses['free_bot'].item())
-        lbfgs_history['load'].append(losses['load'].item())
-        
+        loss_val, losses = physics.compute_loss(pinn, training_data, device)
+        ssbfgs_history['total'].append(loss_val.item())
+        ssbfgs_history['pde'].append(losses['pde'].item())
+        ssbfgs_history['bc_sides'].append(losses['bc_sides'].item())
+        ssbfgs_history['free_top'].append(losses['free_top'].item())
+        ssbfgs_history['free_bot'].append(losses['free_bot'].item())
+        ssbfgs_history['load'].append(losses['load'].item())
+
         # Compute FEM error and print
         if fem_available:
             with torch.no_grad():
@@ -191,26 +249,26 @@ def train(callback=None):
                 diff = np.abs(u_pinn_flat - u_fea_flat)
                 mae = np.mean(diff)
                 max_err = np.max(diff)
-                lbfgs_history['fem_mae'].append(mae)
-                lbfgs_history['fem_max_err'].append(max_err)
-                lbfgs_history['steps'].append(i)
-            print(f"L-BFGS Step {i}: Total Loss: {loss_val.item():.6e} | PDE: {losses['pde'].item():.6e} | "
+                ssbfgs_history['fem_mae'].append(mae)
+                ssbfgs_history['fem_max_err'].append(max_err)
+                ssbfgs_history['steps'].append(i)
+            print(f"SSBFGS Step {i}: Total Loss: {loss_val.item():.6e} | PDE: {losses['pde'].item():.6e} | "
                   f"BC_sides: {losses['bc_sides'].item():.6e} | Free_top: {losses['free_top'].item():.6e} | "
                   f"Free_bot: {losses['free_bot'].item():.6e} | Load: {losses['load'].item():.6e} | "
                   f"FEM MAE: {mae:.6e} | Time: {step_end - step_start:.4f}s")
         else:
-            print(f"L-BFGS Step {i}: Total Loss: {loss_val.item():.6e} | PDE: {losses['pde'].item():.6e} | "
+            print(f"SSBFGS Step {i}: Total Loss: {loss_val.item():.6e} | PDE: {losses['pde'].item():.6e} | "
                   f"BC_sides: {losses['bc_sides'].item():.6e} | Free_top: {losses['free_top'].item():.6e} | "
                   f"Free_bot: {losses['free_bot'].item():.6e} | Load: {losses['load'].item():.6e} | "
                   f"Time: {step_end - step_start:.4f}s")
-        
-        # Save model at every L-BFGS step
+
+        # Save model at every SSBFGS step
         torch.save(pinn.state_dict(), "pinn_model.pth")
 >>>>>>> a204439ef0cee6b426c4e683743f2eee33c9b01a
             
     # Save Model and Loss Histories
     torch.save(pinn.state_dict(), "pinn_model.pth")
-    loss_history = {'adam': adam_history, 'lbfgs': lbfgs_history}
+    loss_history = {'soap': soap_history, 'ssbfgs': ssbfgs_history}
     np.save("loss_history.npy", loss_history)
     print("Model saved.")
     return pinn

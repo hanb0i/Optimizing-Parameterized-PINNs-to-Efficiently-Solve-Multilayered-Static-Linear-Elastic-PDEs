@@ -6,11 +6,10 @@ import numpy as np
 Lx = 1.0
 Ly = 1.0
 H = 0.1  # Total height
-# Single layer (homogeneous material)
-# z goes from 0 to H
 Layer_Interfaces = [0.0, H]
 
 # --- Material Properties ---
+<<<<<<< HEAD
 # Young's Modulus (E) and Poisson's Ratio (nu)
 <<<<<<< HEAD
 # Can be different per layer
@@ -19,6 +18,9 @@ nu_vals = [0.3, 0.3, 0.3]
 =======
 # Single layer to match FEM
 E_vals = [1.0] # Normalized
+=======
+E_vals = [1.0]  # Normalized
+>>>>>>> 3176abcf323e43483e790d268adaa1838f1907f2
 nu_vals = [0.3]
 >>>>>>> a204439ef0cee6b426c4e683743f2eee33c9b01a
 
@@ -30,6 +32,7 @@ def get_lame_params(E, nu):
 Lame_Params = [get_lame_params(e, n) for e, n in zip(E_vals, nu_vals)]
 
 # --- Loading ---
+<<<<<<< HEAD
 p0 = 0.1 # Load magnitude
 
 # Load patch boundaries (normalized coordinates)
@@ -71,11 +74,42 @@ WEIGHTS = {
 # Sampling
 N_INTERIOR = 10000 # Per layer
 N_BOUNDARY = 2000  # Per face type
+=======
+p0 = 1.0  # Load magnitude
+LOAD_PATCH_X = [Lx/3, 2*Lx/3]
+LOAD_PATCH_Y = [Ly/3, 2*Ly/3]
 
-# Fourier Features
-FOURIER_DIM = 0 # Number of Fourier frequencies
-FOURIER_SCALE = 1.0 # Standard deviation for frequency sampling
+# --- Training Hyperparameters ---
+LEARNING_RATE = 1e-3
+EPOCHS_SOAP = 2000
+EPOCHS_SSBFGS = 30
+>>>>>>> 3176abcf323e43483e790d268adaa1838f1907f2
+
+# SOAP optimizer
+SOAP_PRECONDITION_FREQUENCY = 10
+
+# SciPy self-scaled BFGS optimizer
+SS_BFGS_METHOD = "BFGS"
+SS_BFGS_VARIANT = "SSBFGS_AB"
+SS_BFGS_MAXITER = 1
+SS_BFGS_GTOL = 0.0
+SS_BFGS_INITIAL_SCALE = False
+
+# Loss Weights
+WEIGHTS = {
+    'pde': 1.0,
+    'bc': 1.0,
+    'load': 1.0,
+}
+
+# Sampling
+N_INTERIOR = 10000
+N_BOUNDARY = 2000
 
 # Output Scaling
+<<<<<<< HEAD
 OUTPUT_SCALE = 3.55 # Scaling factor for network output
 >>>>>>> a204439ef0cee6b426c4e683743f2eee33c9b01a
+=======
+OUTPUT_SCALE = 3.55
+>>>>>>> 3176abcf323e43483e790d268adaa1838f1907f2
