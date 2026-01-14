@@ -12,6 +12,7 @@ import sys
 import os
 sys.path.append(os.path.dirname(__file__))
 
+import soap
 import scipy_patch
 import pinn_config as config
 import data
@@ -31,8 +32,14 @@ def train():
     print(pinn)
     
     # SOAP Optimizer with learning rate scheduler
-    optimizer_soap = optim.Adam(pinn.parameters(), lr=config.LEARNING_RATE)
-    scheduler = optim.lr_scheduler.StepLR(optimizer_soap, step_size=400, gamma=0.3)
+    optimizer_soap = soap.SOAP(
+        pinn.parameters(),
+        lr=config.LEARNING_RATE,
+        betas=(0.95, 0.95),
+        weight_decay=0.0,
+        precondition_frequency=config.SOAP_PRECONDITION_FREQUENCY,
+    )
+    scheduler = optim.lr_scheduler.StepLR(optimizer_soap, step_size=config.EPOCHS_SOAP//5, gamma=0.3)
     
     # Initial Data
     training_data = data.get_data()
