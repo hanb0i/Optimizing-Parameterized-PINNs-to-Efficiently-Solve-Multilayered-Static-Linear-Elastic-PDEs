@@ -1,4 +1,3 @@
-
 import torch
 import torch.optim as optim
 import numpy as np
@@ -13,16 +12,18 @@ import model
 import physics
 import matplotlib.pyplot as plt
 
-def get_loss_weights(epoch):
+def get_loss_weights(epoch, use_hard_bc=True):
+    weights = dict(config.WEIGHTS)
     if epoch < config.WEIGHT_RAMP_EPOCHS:
         ramp = max(1, config.WEIGHT_RAMP_EPOCHS)
         t = epoch / ramp
-        weights = dict(config.WEIGHTS)
         weights['load'] = config.LOAD_WEIGHT_START + t * (config.WEIGHTS['load'] - config.LOAD_WEIGHT_START)
         weights['pde'] = config.PDE_WEIGHT_START + t * (config.WEIGHTS['pde'] - config.PDE_WEIGHT_START)
         weights['energy'] = config.ENERGY_WEIGHT_START + t * (config.WEIGHTS['energy'] - config.ENERGY_WEIGHT_START)
-        return weights
-    return config.WEIGHTS
+    if not use_hard_bc:
+        weights['pde'] *= config.SOFT_MODE_PDE_WEIGHT_SCALE
+        weights['load'] *= config.SOFT_MODE_LOAD_WEIGHT_SCALE
+    return weights
 
 def train():
     if torch.cuda.is_available():
@@ -37,6 +38,9 @@ def train():
     # Initialize Model
     pinn = model.MultiLayerPINN().to(device)
     print(pinn)
+    if config.FORCE_SOFT_SIDE_BC_FROM_START:
+        config.USE_HARD_SIDE_BC = False
+        pinn.set_hard_bc(False)
     
     # Initialize Optimizers
     # SOAP improves conditioning for stiff, multi-term PINN losses; prefer it when Adam/AdamW stagnates.
@@ -109,11 +113,15 @@ def train():
     for epoch in range(config.EPOCHS_ADAM):
         optimizer_adam.zero_grad()
 
-        use_hard_bc = epoch < config.HARD_BC_EPOCHS
-        if config.USE_HARD_SIDE_BC != use_hard_bc:
-            config.USE_HARD_SIDE_BC = use_hard_bc
-            if not use_hard_bc:
-                print("Switching to soft side BCs (mask off) to lift deflection.")
+        if config.FORCE_SOFT_SIDE_BC_FROM_START:
+            use_hard_bc = False
+        else:
+            use_hard_bc = epoch < config.HARD_BC_EPOCHS
+            if config.USE_HARD_SIDE_BC != use_hard_bc:
+                config.USE_HARD_SIDE_BC = use_hard_bc
+                pinn.set_hard_bc(use_hard_bc)
+                if not use_hard_bc:
+                    print("Switching to soft side BCs (mask off) to lift deflection.")
         
         # Periodic data refresh with residual-based adaptive sampling
         if epoch % 500 == 0 and epoch > 0:
@@ -122,7 +130,7 @@ def train():
             training_data = data.get_data(prev_data=training_data, residuals=residuals)
             print(f"  Resampled with residual-based adaptive sampling at epoch {epoch}")
             
-        weights = get_loss_weights(epoch)
+        weights = get_loss_weights(epoch, use_hard_bc)
         loss_val, losses = physics.compute_loss(pinn, training_data, device, weights=weights)
         loss_val.backward()
         optimizer_adam.step()
@@ -170,6 +178,7 @@ def train():
     # L-BFGS Fine-Tuning
     print("Starting L-BFGS Fine-Tuning...")
     config.USE_HARD_SIDE_BC = False
+    pinn.set_hard_bc(False)
     optimizer_lbfgs = optim.LBFGS(
         pinn.parameters(),
         lr=1.0,

@@ -93,3 +93,6 @@ class MultiLayerPINN(nn.Module):
     def predict_all(self, x):
         # Direct prediction for single layer
         return self.layer(x)
+
+    def set_hard_bc(self, use_hard):
+        config.USE_HARD_SIDE_BC = bool(use_hard)
