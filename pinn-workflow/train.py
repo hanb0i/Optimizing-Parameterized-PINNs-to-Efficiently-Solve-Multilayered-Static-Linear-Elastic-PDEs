@@ -215,6 +215,11 @@ def train():
         # Resample collocation points with residual-based adaptive sampling
         residuals = physics.compute_residuals(pinn, training_data, device)
         training_data = data.get_data(prev_data=training_data, residuals=residuals)
+        
+        # Add FEA data back to training_data (as get_data doesn't include it)
+        if len(x_fea_train) > 0:
+            training_data['x_data'] = x_fea_train
+            training_data['u_data'] = u_fea_train
 
         step_start = time.time()
         result = minimize(
@@ -271,18 +276,19 @@ def train():
             print(f"SSBFGS Step {i}: Total Loss: {loss_val.item():.6e} | PDE: {losses['pde'].item():.6e} | "
                   f"BC_sides: {losses['bc_sides'].item():.6e} | Free_top: {losses['free_top'].item():.6e} | "
                   f"Free_bot: {losses['free_bot'].item():.6e} | Load: {losses['load'].item():.6e} | "
+                  f"Data: {losses['data'].item():.6e} | "
                   f"FEM MAE: {mae:.6e} | Time: {step_end - step_start:.4f}s")
         else:
             print(f"SSBFGS Step {i}: Total Loss: {loss_val.item():.6e} | PDE: {losses['pde'].item():.6e} | "
                   f"BC_sides: {losses['bc_sides'].item():.6e} | Free_top: {losses['free_top'].item():.6e} | "
                   f"Free_bot: {losses['free_bot'].item():.6e} | Load: {losses['load'].item():.6e} | "
+                  f"Data: {losses['data'].item():.6e} | "
                   f"Time: {step_end - step_start:.4f}s")
 
-        # Save model at every SSBFGS step
-        torch.save(pinn.state_dict(), "pinn_model.pth")
+
             
     # Save Model and Loss Histories
-    torch.save(pinn.state_dict(), "pinn_model.pth")
+    torch.save(pinn.state_dict(), "pinn-workflow/pinn_model.pth")
     loss_history = {'soap': soap_history, 'ssbfgs': ssbfgs_history}
     np.save("loss_history.npy", loss_history)
     print("Model saved.")

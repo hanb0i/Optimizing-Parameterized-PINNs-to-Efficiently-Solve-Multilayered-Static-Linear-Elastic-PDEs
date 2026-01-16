@@ -26,7 +26,7 @@ LOAD_PATCH_Y = [Ly/3, 2*Ly/3]
 
 # --- Training Hyperparameters ---
 LEARNING_RATE = 1e-3
-EPOCHS_SOAP = 1000
+EPOCHS_SOAP = 2000
 EPOCHS_SSBFGS = 30
 
 # SOAP optimizer
@@ -44,8 +44,8 @@ SS_BFGS_INITIAL_SCALE = False
 WEIGHTS = {
     'pde': 1.0,
     'bc': 1.0,
-    'load': 1.0,
-    'data': 1.0,
+    'load': 50.0,
+    'data': 5000.0,
 }
 
 # Sampling
