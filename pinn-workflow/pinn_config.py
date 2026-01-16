@@ -53,10 +53,10 @@ WEIGHTS = {
     'interface_u': 1.0 
 }
 # Loss weight ramp: load-first to raise displacement while preserving shape.
-WEIGHT_RAMP_EPOCHS = 800
-LOAD_WEIGHT_START = 8.0
-PDE_WEIGHT_START = 0.2
-ENERGY_WEIGHT_START = 0.0
+WEIGHT_RAMP_EPOCHS = 0
+LOAD_WEIGHT_START = WEIGHTS['load']
+PDE_WEIGHT_START = WEIGHTS['pde']
+ENERGY_WEIGHT_START = WEIGHTS['energy']
 # Force soft side boundary conditions from the beginning.
 FORCE_SOFT_SIDE_BC_FROM_START = True
 SOFT_MODE_PDE_WEIGHT_SCALE = 3.0

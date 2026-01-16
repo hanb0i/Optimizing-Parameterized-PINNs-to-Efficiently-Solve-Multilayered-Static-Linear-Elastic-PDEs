@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 
 def get_loss_weights(epoch, use_hard_bc=True):
     weights = dict(config.WEIGHTS)
-    if epoch < config.WEIGHT_RAMP_EPOCHS:
+    if config.WEIGHT_RAMP_EPOCHS > 0 and epoch < config.WEIGHT_RAMP_EPOCHS:
         ramp = max(1, config.WEIGHT_RAMP_EPOCHS)
         t = epoch / ramp
         weights['load'] = config.LOAD_WEIGHT_START + t * (config.WEIGHTS['load'] - config.LOAD_WEIGHT_START)
