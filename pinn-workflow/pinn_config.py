@@ -42,10 +42,10 @@ SS_BFGS_INITIAL_SCALE = False
 
 # Loss Weights
 WEIGHTS = {
-    'pde': 1.0,
+    'pde': 0.0,
     'bc': 1.0,
-    'load': 50.0,
-    'data': 5000.0,
+    'load': 1.0,
+    'data': 1.0,
 }
 
 # Sampling
