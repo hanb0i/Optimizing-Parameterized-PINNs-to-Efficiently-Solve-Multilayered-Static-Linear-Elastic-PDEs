@@ -220,7 +220,7 @@ def solve_fea():
     # Load patch on Top Surface (z=H, k=nz-1)
     # x in [Lx/3, 2Lx/3], y in [Ly/3, 2Ly/3]
     F = np.zeros(n_dof)
-    p0 = 0.1
+    p0 = 0.5
     
     # Identify Top Nodes
     # k = nz-1

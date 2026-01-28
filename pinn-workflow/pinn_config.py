@@ -23,7 +23,7 @@ def get_lame_params(E, nu):
 Lame_Params = [get_lame_params(e, n) for e, n in zip(E_vals, nu_vals)]
 
 # --- Loading ---
-p0 = 1.0 # Load magnitude
+p0 = 0.5 # Load magnitude
 
 # --- Unit-consistent loss scaling ---
 # div(sigma) has units of stress/length; scale by a characteristic length.
@@ -47,8 +47,8 @@ SOAP_PRECONDITION_FREQUENCY = 10 # Lower = more frequent curvature updates; high
 #Plot Physical Residuals Every N Epochs every 100 epochs. 
 WEIGHTS = {
     'pde': 1.0,    # Increased from 1.0
-    'bc': 0.7,      # Slightly softer sides so load can gather more budget
-    'load': 1.0, # Heavily increased to match traction target
+    'bc': 5.0,      # Increased to strictly enforce clamped sides
+    'load': 10.0, # Increased to force the model to deflect matching the load
     'energy': 1.0, # Energy/compliance balance
     'interface_u': 1.0 
 }
