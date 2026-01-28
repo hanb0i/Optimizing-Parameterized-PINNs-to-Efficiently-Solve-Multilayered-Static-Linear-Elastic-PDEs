@@ -1,32 +1,103 @@
+
 import torch
 import numpy as np
+import os
 import pinn_config as config
+
+# Import FEM solver for generating supervision data
+import sys
+FEA_SOLVER_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "fea-workflow", "solver")
+if FEA_SOLVER_DIR not in sys.path:
+    sys.path.insert(0, FEA_SOLVER_DIR)
+
+
+def load_fem_supervision_data(n_points_per_e=None, e_values=None):
+    """Load sparse FEM supervision data for hybrid training.
+    
+    Generates FEM solutions for each E value and samples sparse points.
+    
+    Args:
+        n_points_per_e: Number of points to sample per E value (default: config.N_DATA_POINTS // len(E))
+        e_values: List of E values to sample (default: config.DATA_E_VALUES)
+    
+    Returns:
+        x_data: (N, 4) tensor of input points [x, y, z, E]
+        u_data: (N, 3) tensor of target displacements [ux, uy, uz]
+    """
+    import fem_solver
+    
+    if e_values is None:
+        e_values = config.DATA_E_VALUES
+    if n_points_per_e is None:
+        n_points_per_e = config.N_DATA_POINTS // len(e_values)
+    
+    x_data_list = []
+    u_data_list = []
+    
+    for E_val in e_values:
+        print(f"  Generating FEM supervision for E={E_val}...")
+        
+        # Run FEM solver
+        cfg = {
+            'geometry': {'Lx': config.Lx, 'Ly': config.Ly, 'H': config.H},
+            'material': {'E': E_val, 'nu': config.nu_vals[0]},
+            'load_patch': {
+                'pressure': config.p0,
+                'x_start': config.LOAD_PATCH_X[0] / config.Lx,
+                'x_end': config.LOAD_PATCH_X[1] / config.Lx,
+                'y_start': config.LOAD_PATCH_Y[0] / config.Ly,
+                'y_end': config.LOAD_PATCH_Y[1] / config.Ly
+            }
+        }
+        x_nodes, y_nodes, z_nodes, u_grid = fem_solver.solve_fem(cfg)
+        
+        # Create mesh grid for all FEM nodes
+        nx, ny, nz = len(x_nodes), len(y_nodes), len(z_nodes)
+        X, Y, Z = np.meshgrid(x_nodes, y_nodes, z_nodes, indexing='ij')
+        
+        # Flatten to get all points
+        x_flat = X.flatten()
+        y_flat = Y.flatten()
+        z_flat = Z.flatten()
+        u_flat = u_grid.reshape(-1, 3)
+        
+        # Random sampling (sparse)
+        total_points = len(x_flat)
+        indices = np.random.choice(total_points, size=min(n_points_per_e, total_points), replace=False)
+        
+        # Create input points with E value
+        x_sampled = np.stack([
+            x_flat[indices],
+            y_flat[indices],
+            z_flat[indices],
+            np.ones(len(indices)) * E_val
+        ], axis=1)
+        
+        u_sampled = u_flat[indices]
+        
+        x_data_list.append(torch.tensor(x_sampled, dtype=torch.float32))
+        u_data_list.append(torch.tensor(u_sampled, dtype=torch.float32))
+    
+    x_data = torch.cat(x_data_list, dim=0)
+    u_data = torch.cat(u_data_list, dim=0)
+    
+    print(f"  Loaded {len(x_data)} sparse FEM supervision points")
+    return x_data, u_data
+
 
 def sample_domain(n, z_min, z_max):
     # Uniform sampling
     x = torch.rand(n, 1) * config.Lx
     y = torch.rand(n, 1) * config.Ly
     z = torch.rand(n, 1) * (z_max - z_min) + z_min
-    return torch.cat([x, y, z], dim=1)
-
-def sample_domain_under_patch(n, z_min, z_max):
-    """Sample interior points directly under the load patch."""
-    x_min, x_max = config.LOAD_PATCH_X
-    y_min, y_max = config.LOAD_PATCH_Y
-    x = torch.rand(n, 1) * (x_max - x_min) + x_min
-    y = torch.rand(n, 1) * (y_max - y_min) + y_min
-    z = torch.rand(n, 1) * (z_max - z_min) + z_min
-    return torch.cat([x, y, z], dim=1)
+    
+    # Sample Young's Modulus E
+    e = torch.rand(n, 1) * (config.E_RANGE[1] - config.E_RANGE[0]) + config.E_RANGE[0]
+    
+    return torch.cat([x, y, z, e], dim=1)
 
 def sample_domain_residual_based(n, z_min, z_max, prev_pts, prev_residuals):
-    """Sample points weighted by residual magnitude.
-    
-    Args:
-        n: Number of points to sample
-        z_min, z_max: Domain bounds in z
-        prev_pts: Previous collocation points (N_prev, 3)
-        prev_residuals: Residual magnitudes at previous points (N_prev,)
-    """
+    """Sample points weighted by residual magnitude."""
     # Check if residuals are too small - fall back to uniform sampling
     if prev_residuals.sum() < 1e-12 or torch.isnan(prev_residuals).any():
         return sample_domain(n, z_min, z_max)
@@ -41,11 +112,13 @@ def sample_domain_residual_based(n, z_min, z_max, prev_pts, prev_residuals):
     sampled_pts = prev_pts[indices]
     
     # Add noise to create new points nearby
-    noise_scale = config.SAMPLING_NOISE_SCALE  # Finer noise keeps high-res residual points clustered.
+    noise_scale = 0.05  # 5% perturbation
     noise_x = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * config.Lx
     noise_y = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * config.Ly
     noise_z = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * (z_max - z_min)
-    noise = torch.cat([noise_x, noise_y, noise_z], dim=1)
+    noise_e = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * (config.E_RANGE[1] - config.E_RANGE[0])
+    
+    noise = torch.cat([noise_x, noise_y, noise_z, noise_e], dim=1)
     
     new_pts = sampled_pts + noise
     
@@ -53,6 +126,7 @@ def sample_domain_residual_based(n, z_min, z_max, prev_pts, prev_residuals):
     new_pts[:, 0] = torch.clamp(new_pts[:, 0], 0, config.Lx)
     new_pts[:, 1] = torch.clamp(new_pts[:, 1], 0, config.Ly)
     new_pts[:, 2] = torch.clamp(new_pts[:, 2], z_min, z_max)
+    new_pts[:, 3] = torch.clamp(new_pts[:, 3], config.E_RANGE[0], config.E_RANGE[1])
     
     return new_pts
 
@@ -65,25 +139,29 @@ def sample_boundaries(n, z_min, z_max):
     y1 = torch.rand(n_face, 1) * config.Ly
     z1 = torch.rand(n_face, 1) * (z_max - z_min) + z_min
     x1 = torch.zeros(n_face, 1)
-    p1 = torch.cat([x1, y1, z1], dim=1)
+    e1 = torch.rand(n_face, 1) * (config.E_RANGE[1] - config.E_RANGE[0]) + config.E_RANGE[0]
+    p1 = torch.cat([x1, y1, z1, e1], dim=1)
     
     # x=Lx
     y2 = torch.rand(n_face, 1) * config.Ly
     z2 = torch.rand(n_face, 1) * (z_max - z_min) + z_min
     x2 = torch.ones(n_face, 1) * config.Lx
-    p2 = torch.cat([x2, y2, z2], dim=1)
+    e2 = torch.rand(n_face, 1) * (config.E_RANGE[1] - config.E_RANGE[0]) + config.E_RANGE[0]
+    p2 = torch.cat([x2, y2, z2, e2], dim=1)
     
     # y=0
     x3 = torch.rand(n_face, 1) * config.Lx
     z3 = torch.rand(n_face, 1) * (z_max - z_min) + z_min
     y3 = torch.zeros(n_face, 1)
-    p3 = torch.cat([x3, y3, z3], dim=1)
+    e3 = torch.rand(n_face, 1) * (config.E_RANGE[1] - config.E_RANGE[0]) + config.E_RANGE[0]
+    p3 = torch.cat([x3, y3, z3, e3], dim=1)
     
     # y=Ly
     x4 = torch.rand(n_face, 1) * config.Lx
     z4 = torch.rand(n_face, 1) * (z_max - z_min) + z_min
     y4 = torch.ones(n_face, 1) * config.Ly
-    p4 = torch.cat([x4, y4, z4], dim=1)
+    e4 = torch.rand(n_face, 1) * (config.E_RANGE[1] - config.E_RANGE[0]) + config.E_RANGE[0]
+    p4 = torch.cat([x4, y4, z4, e4], dim=1)
     
     return torch.cat([p1, p2, p3, p4], dim=0)
 
@@ -99,34 +177,39 @@ def sample_boundaries_residual_based(n, z_min, z_max, prev_pts, prev_residuals):
     indices = torch.multinomial(residual_probs, n, replacement=True)
     sampled_pts = prev_pts[indices]
     
-    noise_scale = config.SAMPLING_NOISE_SCALE
+    noise_scale = 0.05
     # Keep boundary constraints while perturbing
     new_pts = sampled_pts.clone()
+    
+    # Add noise to E for all points
+    noise_e = (torch.rand(n) - 0.5) * 2 * noise_scale * (config.E_RANGE[1] - config.E_RANGE[0])
+    new_pts[:, 3] += noise_e
     
     # For each face, perturb only the non-fixed coordinates
     for i in range(n):
         pt = new_pts[i]
         if torch.abs(pt[0]) < 1e-6:  # x=0 face
-            new_pts[i, 1] += (torch.rand((), device=new_pts.device, dtype=new_pts.dtype) - 0.5) * 2 * noise_scale * config.Ly
-            new_pts[i, 2] += (torch.rand((), device=new_pts.device, dtype=new_pts.dtype) - 0.5) * 2 * noise_scale * (z_max - z_min)
+            new_pts[i, 1] += (torch.rand(1) - 0.5) * 2 * noise_scale * config.Ly
+            new_pts[i, 2] += (torch.rand(1) - 0.5) * 2 * noise_scale * (z_max - z_min)
             new_pts[i, 0] = 0.0
         elif torch.abs(pt[0] - config.Lx) < 1e-6:  # x=Lx face
-            new_pts[i, 1] += (torch.rand((), device=new_pts.device, dtype=new_pts.dtype) - 0.5) * 2 * noise_scale * config.Ly
-            new_pts[i, 2] += (torch.rand((), device=new_pts.device, dtype=new_pts.dtype) - 0.5) * 2 * noise_scale * (z_max - z_min)
+            new_pts[i, 1] += (torch.rand(1) - 0.5) * 2 * noise_scale * config.Ly
+            new_pts[i, 2] += (torch.rand(1) - 0.5) * 2 * noise_scale * (z_max - z_min)
             new_pts[i, 0] = config.Lx
         elif torch.abs(pt[1]) < 1e-6:  # y=0 face
-            new_pts[i, 0] += (torch.rand((), device=new_pts.device, dtype=new_pts.dtype) - 0.5) * 2 * noise_scale * config.Lx
-            new_pts[i, 2] += (torch.rand((), device=new_pts.device, dtype=new_pts.dtype) - 0.5) * 2 * noise_scale * (z_max - z_min)
+            new_pts[i, 0] += (torch.rand(1) - 0.5) * 2 * noise_scale * config.Lx
+            new_pts[i, 2] += (torch.rand(1) - 0.5) * 2 * noise_scale * (z_max - z_min)
             new_pts[i, 1] = 0.0
         elif torch.abs(pt[1] - config.Ly) < 1e-6:  # y=Ly face
-            new_pts[i, 0] += (torch.rand((), device=new_pts.device, dtype=new_pts.dtype) - 0.5) * 2 * noise_scale * config.Lx
-            new_pts[i, 2] += (torch.rand((), device=new_pts.device, dtype=new_pts.dtype) - 0.5) * 2 * noise_scale * (z_max - z_min)
+            new_pts[i, 0] += (torch.rand(1) - 0.5) * 2 * noise_scale * config.Lx
+            new_pts[i, 2] += (torch.rand(1) - 0.5) * 2 * noise_scale * (z_max - z_min)
             new_pts[i, 1] = config.Ly
     
     # Clamp
     new_pts[:, 0] = torch.clamp(new_pts[:, 0], 0, config.Lx)
     new_pts[:, 1] = torch.clamp(new_pts[:, 1], 0, config.Ly)
     new_pts[:, 2] = torch.clamp(new_pts[:, 2], z_min, z_max)
+    new_pts[:, 3] = torch.clamp(new_pts[:, 3], config.E_RANGE[0], config.E_RANGE[1])
     
     return new_pts
 
@@ -136,7 +219,8 @@ def sample_top_load(n):
     xl = torch.rand(n, 1) * (config.Lx/3) + config.Lx/3
     yl = torch.rand(n, 1) * (config.Ly/3) + config.Ly/3
     zl = torch.ones(n, 1) * config.H
-    return torch.cat([xl, yl, zl], dim=1)
+    el = torch.rand(n, 1) * (config.E_RANGE[1] - config.E_RANGE[0]) + config.E_RANGE[0]
+    return torch.cat([xl, yl, zl, el], dim=1)
 
 def sample_top_free(n):
     """Sample points on free top surface (outside load patch)."""
@@ -155,7 +239,8 @@ def sample_top_free(n):
         xf, yf = x[mask_free], y[mask_free]
         if len(xf) > 0:
             zf = torch.ones(len(xf), 1) * config.H
-            batch_pts = torch.cat([xf, yf, zf], dim=1)
+            ef = torch.rand(len(xf), 1) * (config.E_RANGE[1] - config.E_RANGE[0]) + config.E_RANGE[0]
+            batch_pts = torch.cat([xf, yf, zf, ef], dim=1)
             pts_free_list.append(batch_pts)
             count += len(xf)
     
@@ -175,7 +260,8 @@ def sample_surface_residual_based(n, z_val, prev_pts, prev_residuals, constrain_
             x = torch.rand(n, 1) * config.Lx
             y = torch.rand(n, 1) * config.Ly
             z = torch.ones(n, 1) * z_val
-            return torch.cat([x, y, z], dim=1)
+            e = torch.rand(n, 1) * (config.E_RANGE[1] - config.E_RANGE[0]) + config.E_RANGE[0]
+            return torch.cat([x, y, z, e], dim=1)
     
     residual_probs = prev_residuals / prev_residuals.sum()
     residual_probs = residual_probs + 1e-10
@@ -183,10 +269,11 @@ def sample_surface_residual_based(n, z_val, prev_pts, prev_residuals, constrain_
     indices = torch.multinomial(residual_probs, n, replacement=True)
     sampled_pts = prev_pts[indices]
     
-    noise_scale = config.SAMPLING_NOISE_SCALE
+    noise_scale = 0.05
     noise_x = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * config.Lx
     noise_y = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * config.Ly
-    noise = torch.cat([noise_x, noise_y, torch.zeros(n, 1)], dim=1)
+    noise_e = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * (config.E_RANGE[1] - config.E_RANGE[0])
+    noise = torch.cat([noise_x, noise_y, torch.zeros(n, 1), noise_e], dim=1)
     
     new_pts = sampled_pts + noise
     new_pts[:, 2] = z_val  # Fix z coordinate
@@ -194,6 +281,7 @@ def sample_surface_residual_based(n, z_val, prev_pts, prev_residuals, constrain_
     # Clamp to domain
     new_pts[:, 0] = torch.clamp(new_pts[:, 0], 0, config.Lx)
     new_pts[:, 1] = torch.clamp(new_pts[:, 1], 0, config.Ly)
+    new_pts[:, 3] = torch.clamp(new_pts[:, 3], config.E_RANGE[0], config.E_RANGE[1])
     
     # If constrained to load patch or free region
     if constrain_load_patch:
@@ -228,13 +316,6 @@ def sample_surface_residual_based(n, z_val, prev_pts, prev_residuals, constrain_
 
 def sample_top(n):
     # DEPRECATED: Use sample_top_load and sample_top_free separately
-    # z=H
-    # Determine Loaded Patch vs Free
-    # Loaded: Lx/3 < x < 2Lx/3 AND Ly/3 < y < 2Ly/3
-    
-    # We'll sample uniform and classify, or explicit sample?
-    # Better to explicitly sample both sets to ensure coverage
-    
     n_load = n // 2
     n_free = n - n_load
     
@@ -248,14 +329,16 @@ def sample_interface(n, z_val):
     x = torch.rand(n, 1) * config.Lx
     y = torch.rand(n, 1) * config.Ly
     z = torch.ones(n, 1) * z_val
-    return torch.cat([x, y, z], dim=1)
+    e = torch.rand(n, 1) * (config.E_RANGE[1] - config.E_RANGE[0]) + config.E_RANGE[0]
+    return torch.cat([x, y, z, e], dim=1)
 
 def sample_bottom(n):
     """Sample points on bottom surface (z=0)."""
     x_bot = torch.rand(n, 1) * config.Lx
     y_bot = torch.rand(n, 1) * config.Ly
     z_bot = torch.zeros(n, 1)
-    return torch.cat([x_bot, y_bot, z_bot], dim=1)
+    e_bot = torch.rand(n, 1) * (config.E_RANGE[1] - config.E_RANGE[0]) + config.E_RANGE[0]
+    return torch.cat([x_bot, y_bot, z_bot, e_bot], dim=1)
 
 def get_data(prev_data=None, residuals=None):
     """Generate collocation points with optional residual-based sampling.
@@ -274,16 +357,9 @@ def get_data(prev_data=None, residuals=None):
     # Decide whether to use residual-based sampling (50% uniform, 50% residual-based)
     use_residual = (prev_data is not None and residuals is not None)
     
-    n_patch = int(config.N_INTERIOR * config.UNDER_PATCH_FRACTION)
-    if n_patch < 0:
-        n_patch = 0
-    if n_patch > config.N_INTERIOR:
-        n_patch = config.N_INTERIOR
-    n_interior = config.N_INTERIOR - n_patch
-    
     if use_residual:
-        n_uniform = n_interior // 2
-        n_residual = n_interior - n_uniform
+        n_uniform = config.N_INTERIOR // 2
+        n_residual = config.N_INTERIOR - n_uniform
         
         # Interior: half uniform, half residual-based
         interior_uniform = sample_domain(n_uniform, z_min, z_max)
@@ -292,13 +368,10 @@ def get_data(prev_data=None, residuals=None):
             prev_data['interior'][0], residuals['interior']
         )
         interior = torch.cat([interior_uniform, interior_residual], dim=0)
-        if n_patch > 0:
-            interior_patch = sample_domain_under_patch(n_patch, z_min, z_max)
-            interior = torch.cat([interior, interior_patch], dim=0)
         
         # BC Sides: half uniform, half residual-based
-        n_uniform_bc = config.N_SIDES // 2
-        n_residual_bc = config.N_SIDES - n_uniform_bc
+        n_uniform_bc = config.N_BOUNDARY // 2
+        n_residual_bc = config.N_BOUNDARY - n_uniform_bc
         bc_uniform = sample_boundaries(n_uniform_bc, z_min, z_max)
         bc_residual = sample_boundaries_residual_based(
             n_residual_bc, z_min, z_max,
@@ -307,8 +380,8 @@ def get_data(prev_data=None, residuals=None):
         bc_sides = torch.cat([bc_uniform, bc_residual], dim=0)
         
         # Top Load: half uniform, half residual-based
-        n_uniform_load = config.N_TOP_LOAD // 2
-        n_residual_load = config.N_TOP_LOAD - n_uniform_load
+        n_uniform_load = config.N_BOUNDARY // 2
+        n_residual_load = config.N_BOUNDARY - n_uniform_load
         load_uniform = sample_top_load(n_uniform_load)
         load_residual = sample_surface_residual_based(
             n_residual_load, config.H,
@@ -318,8 +391,8 @@ def get_data(prev_data=None, residuals=None):
         top_load = torch.cat([load_uniform, load_residual], dim=0)
         
         # Top Free: half uniform, half residual-based
-        n_uniform_free = config.N_TOP_FREE // 2
-        n_residual_free = config.N_TOP_FREE - n_uniform_free
+        n_uniform_free = config.N_BOUNDARY // 2
+        n_residual_free = config.N_BOUNDARY - n_uniform_free
         free_uniform = sample_top_free(n_uniform_free)
         free_residual = sample_surface_residual_based(
             n_residual_free, config.H,
@@ -329,8 +402,8 @@ def get_data(prev_data=None, residuals=None):
         top_free = torch.cat([free_uniform, free_residual], dim=0)
         
         # Bottom: half uniform, half residual-based
-        n_uniform_bot = config.N_BOTTOM // 2
-        n_residual_bot = config.N_BOTTOM - n_uniform_bot
+        n_uniform_bot = config.N_BOUNDARY // 2
+        n_residual_bot = config.N_BOUNDARY - n_uniform_bot
         bot_uniform = sample_bottom(n_uniform_bot)
         bot_residual = sample_surface_residual_based(
             n_residual_bot, 0.0,
@@ -340,16 +413,11 @@ def get_data(prev_data=None, residuals=None):
         
     else:
         # Uniform sampling (initial or when no residuals provided)
-        interior_uniform = sample_domain(n_interior, z_min, z_max)
-        if n_patch > 0:
-            interior_patch = sample_domain_under_patch(n_patch, z_min, z_max)
-            interior = torch.cat([interior_uniform, interior_patch], dim=0)
-        else:
-            interior = interior_uniform
-        bc_sides = sample_boundaries(config.N_SIDES, z_min, z_max)
-        top_load = sample_top_load(config.N_TOP_LOAD)
-        top_free = sample_top_free(config.N_TOP_FREE)
-        bot_free = sample_bottom(config.N_BOTTOM)
+        interior = sample_domain(config.N_INTERIOR, z_min, z_max)
+        bc_sides = sample_boundaries(config.N_BOUNDARY, z_min, z_max)
+        top_load = sample_top_load(config.N_BOUNDARY)
+        top_free = sample_top_free(config.N_BOUNDARY)
+        bot_free = sample_bottom(config.N_BOUNDARY)
     
     return {
         'interior': [interior],
