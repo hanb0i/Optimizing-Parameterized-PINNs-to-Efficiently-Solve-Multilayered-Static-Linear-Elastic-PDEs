@@ -1,14 +1,29 @@
 import torch
 import torch.nn as nn
+import numpy as np
 import pinn_config as config
 
+
+class FourierFeatures(nn.Module):
+    def __init__(self, input_dim, mapping_size, scale):
+        super().__init__()
+        self.B = nn.Parameter(torch.randn(input_dim, mapping_size) * scale, requires_grad=False)
+
+    def forward(self, x):
+        # x: (N, 3)
+        x_norm = x.clone()
+        x_norm[:, 2] = x_norm[:, 2] * 10.0  # Scale z to [0, 1]
+        x_proj = (2.0 * np.pi * x_norm) @ self.B
+        return torch.cat([torch.sin(x_proj), torch.cos(x_proj)], dim=-1)
+
 class LayerNet(nn.Module):
-    def __init__(self, hidden_layers=2, hidden_units=32, activation=nn.Tanh()):
+    def __init__(self, hidden_layers=2, hidden_units=32, activation=nn.Tanh(),
+                 fourier_dim=0, fourier_scale=1.0):
         super().__init__()
         layers = []
-        # Input: x, y, z, E (4 coords)
-        input_dim = 4
-        current_dim = input_dim
+        # Input: x, y, z (and E as an extra channel)
+        self.fourier = FourierFeatures(3, fourier_dim, fourier_scale) if fourier_dim > 0 else None
+        current_dim = (2 * fourier_dim + 1) if fourier_dim > 0 else 4
         
         layers.append(nn.Linear(current_dim, hidden_units))
         layers.append(activation)
@@ -49,7 +64,12 @@ class LayerNet(nn.Module):
         e_span = (e_max - e_min) if (e_max - e_min) != 0 else 1.0
         e_norm = (e_param - e_min) / e_span
         
-        x_scaled = torch.cat([x_coord, y_coord, z_coord * 10.0, e_norm], dim=1)
+        if self.fourier is not None:
+            xyz = torch.cat([x_coord, y_coord, z_coord], dim=1)
+            ff = self.fourier(xyz)
+            x_scaled = torch.cat([ff, e_norm], dim=1)
+        else:
+            x_scaled = torch.cat([x_coord, y_coord, z_coord * 10.0, e_norm], dim=1)
         
         u_raw = self.net(x_scaled)
         
@@ -65,14 +85,13 @@ class LayerNet(nn.Module):
             mask = x_c * (1.0 - x_c) * y_c * (1.0 - y_c) * 16.0
             u_raw = u_raw * mask
         
-        # Physics-informed scaling: u ~ 1/E for linear elasticity
-        return u_raw / e_param
+        return u_raw
 
 class MultiLayerPINN(nn.Module):
     def __init__(self):
         super().__init__()
         # Single network for homogeneous material
-        self.layer = LayerNet()
+        self.layer = LayerNet(fourier_dim=config.FOURIER_DIM, fourier_scale=config.FOURIER_SCALE)
         
     def forward(self, x, layer_idx=0):
         # layer_idx kept for compatibility but not used
