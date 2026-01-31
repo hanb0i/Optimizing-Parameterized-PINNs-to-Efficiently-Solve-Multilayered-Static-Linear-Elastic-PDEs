@@ -87,7 +87,7 @@ def compute_loss(model, data, device, weights=None):
         weights = config.WEIGHTS
     
     # --- 1. PDE Residuals (Interior) ---
-    x_int = data['interior'][0].to(device)
+    x_int = data['interior'].to(device)
     x_int.requires_grad = True
     
     lm, mu = config.Lame_Params[0]
@@ -122,7 +122,7 @@ def compute_loss(model, data, device, weights=None):
             total_loss += data_weight * loss_data
     
     # --- 2. Dirichlet BCs (Clamped Sides) ---
-    x_side = data['sides'][0].to(device)
+    x_side = data['sides'].to(device)
     u_side = model(x_side, 0)
     # u = 0
     bc_loss = torch.mean(u_side**2)
@@ -210,7 +210,7 @@ def compute_residuals(model, data, device):
     residuals = {}
 
     # --- PDE Residuals (Interior) ---
-    x_int = data['interior'][0].to(device)
+    x_int = data['interior'].to(device)
     x_int.requires_grad = True
     
     lm, mu = config.Lame_Params[0]
@@ -226,7 +226,7 @@ def compute_residuals(model, data, device):
     residuals['interior'] = residual_mag.cpu()
     
     # --- BC Sides Residuals ---
-    x_side = data['sides'][0].to(device)
+    x_side = data['sides'].to(device)
     u_side = model(x_side, 0)
     bc_residual = torch.sqrt(torch.sum(u_side**2, dim=1))
     residuals['sides'] = bc_residual.cpu()
