@@ -99,7 +99,9 @@ def compute_loss(model, data, device, weights=None):
     lm = lm.unsqueeze(2)
     mu = mu.unsqueeze(2)
     
-    u = model(x_int, 0)
+    # Predict compliance-scaled displacement v = E * u
+    v = model(x_int, 0)
+    u = v / E_local
     grad_u = gradient(u, x_int)
     eps = strain(grad_u)
     sig = stress(eps, lm, mu)
@@ -134,7 +136,8 @@ def compute_loss(model, data, device, weights=None):
     lm = lm.unsqueeze(2)
     mu = mu.unsqueeze(2)
     
-    u_top = model(x_top_load, 0)
+    v_top = model(x_top_load, 0)
+    u_top = v_top / E_local_load
     grad_u_top = gradient(u_top, x_top_load)
     sig_top = stress(strain(grad_u_top), lm, mu)
     
@@ -170,7 +173,8 @@ def compute_loss(model, data, device, weights=None):
     lm_free = lm_free.unsqueeze(2)
     mu_free = mu_free.unsqueeze(2)
     
-    u_top_free = model(x_top_free, 0)
+    v_top_free = model(x_top_free, 0)
+    u_top_free = v_top_free / E_local_free
     grad_u_free = gradient(u_top_free, x_top_free)
     sig_top_free = stress(strain(grad_u_free), lm_free, mu_free)
     T_free = sig_top_free[:, :, 2]
@@ -189,7 +193,8 @@ def compute_loss(model, data, device, weights=None):
     lm_bot = lm_bot.unsqueeze(2)
     mu_bot = mu_bot.unsqueeze(2)
     
-    u_bot = model(x_bot, 0)
+    v_bot = model(x_bot, 0)
+    u_bot = v_bot / E_local_bot
     grad_u_bot = gradient(u_bot, x_bot)
     sig_bot = stress(strain(grad_u_bot), lm_bot, mu_bot)
     
