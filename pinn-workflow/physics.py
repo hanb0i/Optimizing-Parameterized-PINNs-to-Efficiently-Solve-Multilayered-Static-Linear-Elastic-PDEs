@@ -225,7 +225,7 @@ def compute_loss(model, data, device, weights=None):
         losses['data'] = loss_data
         
         # specific weight for data or default high weight
-        w_data = weights.get('data', 100.0) 
+        w_data = weights.get('data', 1.0) 
         total_loss += w_data * loss_data
     
     losses['total'] = total_loss
