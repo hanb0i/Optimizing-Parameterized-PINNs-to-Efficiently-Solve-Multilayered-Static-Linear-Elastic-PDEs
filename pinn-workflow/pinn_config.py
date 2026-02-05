@@ -53,12 +53,11 @@ EPOCHS_LBFGS = 300 # L-BFGS fine-tuning steps; resampling here should help conve
 SOAP_PRECONDITION_FREQUENCY = 10 # Lower = more frequent curvature updates; higher = cheaper but less responsive
 #Plot Physical Residuals Every N Epochs every 100 epochs. 
 WEIGHTS = {
-    'pde': 5.0,    # Reverted to 5.0 (Optimal: 0.4% Error at E=1, 10% at E=10)
-    'bc': 0.7,      # Slightly softer sides so load can gather more budget
-    'load': 5.0, # Optimal load weight
-    'energy': 0.63, # Per user request
-    'interface_u': 1.0,
-    'data': 1.0   # Normalized loss works best with balanced weight
+    'pde': 0.5,    # Reduce PDE dominance to allow larger deflection
+    'bc': 0.4,      # Softer sides so load can gather more budget
+    'load': 6.0, # Higher traction to lift deflection
+    'energy': 0.5, # Lower energy term to avoid damping magnitude
+    'interface_u': 1.0
 }
 # Loss weight ramp: load-first to raise displacement while preserving shape.
 WEIGHT_RAMP_EPOCHS = 0
