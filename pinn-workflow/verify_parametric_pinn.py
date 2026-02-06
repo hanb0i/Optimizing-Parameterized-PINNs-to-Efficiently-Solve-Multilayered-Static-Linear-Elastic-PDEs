@@ -18,6 +18,272 @@ if FEA_SOLVER_DIR not in sys.path:
 import pinn_config as config
 import model
 import fem_solver
+import data
+import physics
+
+def plot_training_data_distribution():
+    print("Generating Training Data Distribution Plot...")
+    
+    # Generate a sample batch of data
+    # Note: This is a fresh sample based on the distribution logic, not the exact points from training history.
+    sample_data = data.get_data()
+    
+    fig = plt.figure(figsize=(15, 10))
+    
+    # 1. Interior Points (3D Scatter)
+    ax1 = fig.add_subplot(231, projection='3d')
+    pts = sample_data['interior'][0].numpy()
+    # decimate for speed/clarity
+    if len(pts) > 1000:
+        indices = np.random.choice(len(pts), 1000, replace=False)
+        pts = pts[indices]
+    
+    sc1 = ax1.scatter(pts[:, 0], pts[:, 1], pts[:, 2], c=pts[:, 3], cmap='viridis', s=2)
+    ax1.set_title(f"Interior (Sample N={len(pts)})")
+    ax1.set_xlabel('x')
+    ax1.set_ylabel('y')
+    ax1.set_zlabel('z')
+    plt.colorbar(sc1, ax=ax1, label='E')
+
+    # 2. BC Sides (3D Scatter)
+    ax2 = fig.add_subplot(232, projection='3d')
+    pts = sample_data['sides'][0].numpy()
+    if len(pts) > 1000:
+        indices = np.random.choice(len(pts), 1000, replace=False)
+        pts = pts[indices]
+    
+    sc2 = ax2.scatter(pts[:, 0], pts[:, 1], pts[:, 2], c=pts[:, 3], cmap='coolwarm', s=2)
+    ax2.set_title(f"BC Sides (Sample N={len(pts)})")
+    ax2.set_xlabel('x')
+    ax2.set_ylabel('y')
+    ax2.set_zlabel('z')
+    plt.colorbar(sc2, ax=ax2, label='E')
+
+    # 3. Top Load (2D Projection x-y)
+    ax3 = fig.add_subplot(233)
+    pts = sample_data['top_load'].numpy()
+    sc3 = ax3.scatter(pts[:, 0], pts[:, 1], c=pts[:, 3], cmap='plasma', s=5)
+    ax3.set_title(f"Top Load (z=H) (N={len(pts)})")
+    ax3.set_xlabel('x')
+    ax3.set_ylabel('y')
+    ax3.set_xlim(0, config.Lx)
+    ax3.set_ylim(0, config.Ly)
+    # Draw load patch box
+    rect = plt.Rectangle((config.LOAD_PATCH_X[0], config.LOAD_PATCH_Y[0]), 
+                         config.LOAD_PATCH_X[1]-config.LOAD_PATCH_X[0], 
+                         config.LOAD_PATCH_Y[1]-config.LOAD_PATCH_Y[0], 
+                         linewidth=1, edgecolor='r', facecolor='none')
+    ax3.add_patch(rect)
+    plt.colorbar(sc3, ax=ax3, label='E')
+
+    # 4. Top Free (2D Projection x-y)
+    ax4 = fig.add_subplot(234)
+    pts = sample_data['top_free'].numpy()
+    if len(pts) > 1000:
+        indices = np.random.choice(len(pts), 1000, replace=False)
+        pts = pts[indices]
+    sc4 = ax4.scatter(pts[:, 0], pts[:, 1], c=pts[:, 3], cmap='plasma', s=5)
+    ax4.set_title(f"Top Free (z=H) (Sample N={len(pts)})")
+    ax4.set_xlabel('x')
+    ax4.set_ylabel('y')
+    ax4.set_xlim(0, config.Lx)
+    ax4.set_ylim(0, config.Ly)
+    plt.colorbar(sc4, ax=ax4, label='E')
+
+    # 5. Bottom (2D Projection x-y)
+    ax5 = fig.add_subplot(235)
+    pts = sample_data['bottom'].numpy()
+    if len(pts) > 1000:
+        indices = np.random.choice(len(pts), 1000, replace=False)
+        pts = pts[indices]
+    sc5 = ax5.scatter(pts[:, 0], pts[:, 1], c=pts[:, 3], cmap='plasma', s=5)
+    ax5.set_title(f"Bottom (z=0) (Sample N={len(pts)})")
+    ax5.set_xlabel('x')
+    ax5.set_ylabel('y')
+    ax5.set_xlim(0, config.Lx)
+    ax5.set_ylim(0, config.Ly)
+    plt.colorbar(sc5, ax=ax5, label='E')
+
+    plt.tight_layout()
+    save_path = os.path.join(REPO_ROOT, "pinn-workflow", "visualization", "training_data_distribution.png")
+    plt.savefig(save_path)
+    print(f"Saved {save_path}")
+    plt.close()
+
+def plot_training_history():
+    print("Generating Training History Plot...")
+    history_path = os.path.join(PINN_WORKFLOW_DIR, "loss_history.npy")
+    if not os.path.exists(history_path):
+        history_path = os.path.join(REPO_ROOT, "loss_history.npy")
+        
+    if not os.path.exists(history_path):
+        print(f"Error: Could not find loss_history.npy at {history_path}")
+        return
+
+    hist = np.load(history_path, allow_pickle=True).item()
+    adam = hist.get('adam', {})
+    lbfgs = hist.get('lbfgs', {})
+    
+    total_loss = adam.get('total', []) + lbfgs.get('total', [])
+    n_adam = len(adam.get('total', []))
+    
+    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+    axes = axes.flatten()
+
+    def concat_losses(key):
+        return adam.get(key, []) + lbfgs.get(key, [])
+
+    # Plot total loss
+    axes[0].plot(total_loss, linewidth=1.5, color='black')
+    axes[0].axvline(x=n_adam, color='r', linestyle='--', label='Switch to L-BFGS')
+    axes[0].set_xlabel("Training Step", fontsize=12)
+    axes[0].set_ylabel("Total Loss", fontsize=12)
+    axes[0].set_title("Total Loss", fontsize=14)
+    axes[0].set_yscale('log')
+    axes[0].legend()
+    axes[0].grid(True, alpha=0.3)
+
+    # PDE loss
+    pde_loss = concat_losses('pde')
+    axes[1].plot(pde_loss, linewidth=1.5, color='green')
+    axes[1].axvline(x=n_adam, color='r', linestyle='--', alpha=0.5)
+    axes[1].set_xlabel("Training Step", fontsize=12)
+    axes[1].set_ylabel("PDE Loss", fontsize=12)
+    axes[1].set_title("PDE Loss", fontsize=14)
+    axes[1].set_yscale('log')
+    axes[1].grid(True, alpha=0.3)
+
+    # Boundary condition losses
+    bc_sides_loss = concat_losses('bc_sides')
+    free_top_loss = concat_losses('free_top')
+    free_bot_loss = concat_losses('free_bot')
+    axes[2].plot(bc_sides_loss, linewidth=1.5, label='BC Sides', color='blue')
+    axes[2].plot(free_top_loss, linewidth=1.5, label='Free Top', color='cyan')
+    axes[2].plot(free_bot_loss, linewidth=1.5, label='Free Bot', color='purple')
+    axes[2].axvline(x=n_adam, color='r', linestyle='--', alpha=0.5)
+    axes[2].set_xlabel("Training Step", fontsize=12)
+    axes[2].set_ylabel("BC Loss", fontsize=12)
+    axes[2].set_title("Boundary Condition Losses", fontsize=14)
+    axes[2].set_yscale('log')
+    axes[2].legend()
+    axes[2].grid(True, alpha=0.3)
+
+    # Load loss
+    load_loss = concat_losses('load')
+    axes[3].plot(load_loss, linewidth=1.5, color='red')
+    axes[3].axvline(x=n_adam, color='r', linestyle='--', alpha=0.5)
+    axes[3].set_xlabel("Training Step", fontsize=12)
+    axes[3].set_ylabel("Load Loss", fontsize=12)
+    axes[3].set_title("Load BC Loss", fontsize=14)
+    axes[3].set_yscale('log')
+    axes[3].grid(True, alpha=0.3)
+
+    # FEM error plots (if available)
+    has_fem = len(adam.get('fem_mae', [])) > 0
+    if has_fem:
+        # FEM MAE
+        adam_fem_epochs = adam['epochs']
+        adam_fem_mae = adam['fem_mae']
+        lbfgs_fem_steps = [n_adam + s for s in lbfgs.get('steps', [])]
+        lbfgs_fem_mae = lbfgs.get('fem_mae', [])
+        
+        axes[4].plot(adam_fem_epochs, adam_fem_mae, 'o-', linewidth=1.5, label='Adam', color='blue')
+        if len(lbfgs_fem_mae) > 0:
+            axes[4].plot(lbfgs_fem_steps, lbfgs_fem_mae, 's-', linewidth=1.5, label='L-BFGS', color='orange')
+        axes[4].axvline(x=n_adam, color='r', linestyle='--', alpha=0.5)
+        axes[4].set_xlabel("Training Step", fontsize=12)
+        axes[4].set_ylabel("FEM MAE", fontsize=12)
+        axes[4].set_title("FEM Mean Absolute Error", fontsize=14)
+        axes[4].set_yscale('log')
+        axes[4].legend()
+        axes[4].grid(True, alpha=0.3)
+        
+        # FEM Max Error
+        adam_fem_max = adam['fem_max_err']
+        lbfgs_fem_max = lbfgs.get('fem_max_err', [])
+        
+        axes[5].plot(adam_fem_epochs, adam_fem_max, 'o-', linewidth=1.5, label='Adam', color='blue')
+        if len(lbfgs_fem_max) > 0:
+            axes[5].plot(lbfgs_fem_steps, lbfgs_fem_max, 's-', linewidth=1.5, label='L-BFGS', color='orange')
+        axes[5].axvline(x=n_adam, color='r', linestyle='--', alpha=0.5)
+        axes[5].set_xlabel("Training Step", fontsize=12)
+        axes[5].set_ylabel("FEM Max Error", fontsize=12)
+        axes[5].set_title("FEM Maximum Error", fontsize=14)
+        axes[5].set_yscale('log')
+        axes[5].legend()
+        axes[5].grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    save_path = os.path.join(REPO_ROOT, "pinn-workflow", "visualization", "training_history.png")
+    plt.savefig(save_path)
+    print(f"Saved {save_path}")
+    plt.close()
+
+def plot_pde_residual_xz(pinn, device):
+    print("Generating PDE Residual X-Z Plot...")
+    
+    # Define grid in x-z plane at y = 0.5 * Ly
+    nx, nz = 100, 100
+    x = np.linspace(0, config.Lx, nx)
+    z = np.linspace(0, config.H, nz)
+    X_res, Z_res = np.meshgrid(x, z)
+    Y_res = np.ones_like(X_res) * (config.Ly * 0.5)
+    
+    # E value? Let's assume Mean E for this diagnostic
+    E_mean = np.mean(config.E_vals)
+    E_grid = np.ones_like(X_res) * E_mean
+    
+    # Prepare input
+    # Need to flatten
+    pts = np.stack([X_res.flatten(), Y_res.flatten(), Z_res.flatten(), E_grid.flatten()], axis=1)
+    pts_tensor = torch.tensor(pts, dtype=torch.float32).to(device)
+    
+    # Reuse compute_residuals logic but just for this grid
+    # We need a data dict structure for physics.compute_residuals OR just reimplement the check here.
+    # Reimplementing simplified version to get spatial field:
+    
+    pts_tensor.requires_grad = True
+    
+    # Forward pass
+    v_pred = pinn(pts_tensor, 0) # Layer index 0 (doesn't usually matter for single-net if monolithic, but model expects something)
+    
+    # Material properties
+    E_local = pts_tensor[:, 3:4]
+    nu = config.nu_vals[0]
+    lm = (E_local * nu) / ((1 + nu) * (1 - 2 * nu))
+    mu = E_local / (2 * (1 + nu))
+    lm = lm.unsqueeze(2)
+    mu = mu.unsqueeze(2)
+    
+    # u = v / E
+    u = v_pred / E_local
+    
+    # Gradients
+    grad_u = physics.gradient(u, pts_tensor)
+    eps = physics.strain(grad_u)
+    sig = physics.stress(eps, lm, mu)
+    div_sigma = physics.divergence(sig, pts_tensor)
+    
+    # Residual: -div(sigma) -- should be 0
+    residual = -div_sigma * config.PDE_LENGTH_SCALE
+    residual_mag = torch.sqrt(torch.sum(residual**2, dim=1)).detach().cpu().numpy()
+    
+    residual_mag_grid = residual_mag.reshape(nz, nx)
+    
+    fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+    c = ax.contourf(X_res, Z_res, residual_mag_grid, levels=50, cmap='viridis')
+    ax.set_title(f"PDE Residual Magnitude |−∇·σ| (x-z plane at y={config.Ly*0.5:.2f}, E={E_mean})", fontsize=14)
+    ax.set_xlabel("x")
+    ax.set_ylabel("z")
+    cbar = plt.colorbar(c, ax=ax)
+    cbar.set_label("Residual Magnitude")
+    
+    plt.tight_layout()
+    save_path = os.path.join(REPO_ROOT, "pinn-workflow", "visualization", "pde_residual_xz.png")
+    plt.savefig(save_path)
+    print(f"Saved {save_path}")
+    plt.close()
+
 
 def run_fea(E_val):
     print(f"Running FEA for E={E_val}...")
@@ -49,15 +315,27 @@ def main():
         device = torch.device("cpu")
 
     pinn = model.MultiLayerPINN().to(device)
-    model_path = os.path.join(REPO_ROOT, "pinn_model.pth")
+    model_path = os.path.join(REPO_ROOT, "pinn-workflow", "pinn_model.pth")
     if not os.path.exists(model_path):
-        model_path = os.path.join(PINN_WORKFLOW_DIR, "pinn_model.pth")
+        model_path = os.path.join(REPO_ROOT, "pinn_model.pth")
         
     print(f"Loading model from: {model_path}")
     pinn.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
     pinn.eval()
 
+    # Create visualization dir if not exists
+    viz_dir = os.path.join(REPO_ROOT, "pinn-workflow", "visualization")
+    os.makedirs(viz_dir, exist_ok=True)
+
+    # --- 1. Diagnostic Plots ---
+    plot_training_data_distribution()
+    plot_training_history()
+    plot_pde_residual_xz(pinn, device)
+
+    # --- 2. Parametric Verification Plot ---
     # Create figure
+    print("\nGenerating Parametric Comparison Plot...")
+    fig, axes = plt.subplots(3, 3, figsize=(18, 15))
     fig, axes = plt.subplots(3, 3, figsize=(18, 15))
     # Row 0: FEA, Row 1: PINN, Row 2: Error
     # Cols: E=1, E=5, E=10
@@ -126,7 +404,7 @@ def main():
         plt.colorbar(c3, ax=ax_err)
 
     plt.tight_layout()
-    result_path = os.path.join(REPO_ROOT, "parametric_verification.png")
+    result_path = os.path.join(viz_dir, "parametric_verification.png")
     plt.savefig(result_path)
     print(f"\nVerification plot saved to: {result_path}")
     # plt.show()
