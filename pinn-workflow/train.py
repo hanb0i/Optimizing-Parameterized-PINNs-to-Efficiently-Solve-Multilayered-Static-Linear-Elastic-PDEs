@@ -65,10 +65,11 @@ def train():
         Z_fea = fem_data['z']
         U_fea = fem_data['u']
         
-        # Prepare FEM evaluation grid (append base E for parametric PINN)
+        # Prepare FEM evaluation grid (append base E and thickness for parametric PINN)
         pts_fea = np.stack([X_fea.ravel(), Y_fea.ravel(), Z_fea.ravel()], axis=1)
         e_ones = np.ones((pts_fea.shape[0], 1)) * config.E_vals[0]
-        pts_fea = np.hstack([pts_fea, e_ones])
+        t_ones = np.ones((pts_fea.shape[0], 1)) * config.H
+        pts_fea = np.hstack([pts_fea, e_ones, t_ones])
         pts_fea_tensor = torch.tensor(pts_fea, dtype=torch.float32).to(device)
         u_fea_flat = U_fea.reshape(-1, 3)
         
@@ -82,14 +83,14 @@ def train():
     training_data = data.get_data()
 
     # Load and attach Parametric/Hybrid Supervision Data
-    if hasattr(config, "N_DATA_POINTS") and hasattr(config, "DATA_E_VALUES"):
+    if getattr(config, "USE_SUPERVISION_DATA", True) and hasattr(config, "N_DATA_POINTS") and hasattr(config, "DATA_E_VALUES"):
         print(f"Loading hybrid supervision data (N={config.N_DATA_POINTS}, E={config.DATA_E_VALUES})...")
         x_data, u_data = data.load_fem_supervision_data()
         training_data['x_data'] = x_data
         training_data['u_data'] = u_data
         print(f"Attached {len(x_data)} supervision points to training data.")
     else:
-        print("Parametric data config not found, skipping hybrid data loading.")
+        print("Supervision data disabled or not configured; training physics-only.")
  
     # History - store all loss components separately for each optimizer
     adam_history = {
@@ -204,12 +205,10 @@ def train():
         
     num_lbfgs_steps = config.EPOCHS_LBFGS
     print(f"Running {num_lbfgs_steps} L-BFGS outer steps.")
-    print("Resampling with residual-based adaptive sampling each outer step.")
+    print("Using fixed collocation set during L-BFGS for stability.")
     
     for i in range(num_lbfgs_steps):
-        # Resample collocation points with residual-based adaptive sampling
-        residuals = physics.compute_residuals(pinn, training_data, device)
-        training_data = data.get_data(prev_data=training_data, residuals=residuals)
+        # Keep collocation points fixed during L-BFGS for stability
         
         step_start = time.time()
         def closure():

@@ -225,17 +225,20 @@ def plot_pde_residual_xz(pinn, device):
     # Define grid in x-z plane at y = 0.5 * Ly
     nx, nz = 100, 100
     x = np.linspace(0, config.Lx, nx)
-    z = np.linspace(0, config.H, nz)
+    t_min, t_max = config.THICKNESS_RANGE
+    t_mean = 0.5 * (t_min + t_max)
+    z = np.linspace(0, t_mean, nz)
     X_res, Z_res = np.meshgrid(x, z)
     Y_res = np.ones_like(X_res) * (config.Ly * 0.5)
     
-    # E value? Let's assume Mean E for this diagnostic
+    # E and thickness values? Use mean values for this diagnostic
     E_mean = np.mean(config.E_vals)
     E_grid = np.ones_like(X_res) * E_mean
+    T_grid = np.ones_like(X_res) * t_mean
     
     # Prepare input
     # Need to flatten
-    pts = np.stack([X_res.flatten(), Y_res.flatten(), Z_res.flatten(), E_grid.flatten()], axis=1)
+    pts = np.stack([X_res.flatten(), Y_res.flatten(), Z_res.flatten(), E_grid.flatten(), T_grid.flatten()], axis=1)
     pts_tensor = torch.tensor(pts, dtype=torch.float32).to(device)
     
     # Reuse compute_residuals logic but just for this grid
@@ -265,14 +268,15 @@ def plot_pde_residual_xz(pinn, device):
     div_sigma = physics.divergence(sig, pts_tensor)
     
     # Residual: -div(sigma) -- should be 0
-    residual = -div_sigma * config.PDE_LENGTH_SCALE
+    t_tensor = torch.tensor(T_grid.flatten(), dtype=torch.float32, device=pts_tensor.device).unsqueeze(1)
+    residual = -div_sigma * t_tensor
     residual_mag = torch.sqrt(torch.sum(residual**2, dim=1)).detach().cpu().numpy()
     
     residual_mag_grid = residual_mag.reshape(nz, nx)
     
     fig, ax = plt.subplots(1, 1, figsize=(10, 6))
     c = ax.contourf(X_res, Z_res, residual_mag_grid, levels=50, cmap='viridis')
-    ax.set_title(f"PDE Residual Magnitude |−∇·σ| (x-z plane at y={config.Ly*0.5:.2f}, E={E_mean})", fontsize=14)
+    ax.set_title(f"PDE Residual Magnitude |−∇·σ| (x-z plane at y={config.Ly*0.5:.2f}, E={E_mean}, t={t_mean})", fontsize=14)
     ax.set_xlabel("x")
     ax.set_ylabel("z")
     cbar = plt.colorbar(c, ax=ax)
@@ -285,11 +289,11 @@ def plot_pde_residual_xz(pinn, device):
     plt.close()
 
 
-def run_fea(E_val):
-    print(f"Running FEA for E={E_val}...")
+def run_fea(E_val, thickness):
+    print(f"Running FEA for E={E_val}, thickness={thickness}...")
     # Mock config for FEA solver
     cfg = {
-        'geometry': {'Lx': config.Lx, 'Ly': config.Ly, 'H': config.H},
+        'geometry': {'Lx': config.Lx, 'Ly': config.Ly, 'H': thickness},
         'material': {'E': E_val, 'nu': config.nu_vals[0]},
         'load_patch': {
             'pressure': config.p0,
@@ -304,6 +308,8 @@ def run_fea(E_val):
 
 def main():
     E_test_values = [1.0, 5.0, 10.0]
+    t_min, t_max = config.THICKNESS_RANGE
+    thickness_values = [t_min, config.H, t_max]
     results = {}
 
     # Load PINN
@@ -333,80 +339,81 @@ def main():
     plot_pde_residual_xz(pinn, device)
 
     # --- 2. Parametric Verification Plot ---
-    # Create figure
-    print("\nGenerating Parametric Comparison Plot...")
-    fig, axes = plt.subplots(3, 3, figsize=(18, 15))
-    fig, axes = plt.subplots(3, 3, figsize=(18, 15))
-    # Row 0: FEA, Row 1: PINN, Row 2: Error
-    # Cols: E=1, E=5, E=10
+    # Create one figure per thickness to preserve FEA/PINN/Error rows
+    print("\nGenerating Parametric Comparison Plots...")
+    for thickness in thickness_values:
+        fig, axes = plt.subplots(3, 3, figsize=(18, 15))
+        # Row 0: FEA, Row 1: PINN, Row 2: Error
+        # Cols: E=1, E=5, E=10
 
-    for idx, E_val in enumerate(E_test_values):
-        # 1. Run FEA
-        x_nodes, y_nodes, z_nodes, u_fea_grid = run_fea(E_val)
-        
-        # Extract Top Surface for Visualization
-        # u_fea_grid shape: (nx, ny, nz, 3)
-        u_z_fea_top = u_fea_grid[:, :, -1, 2].T # Transpose for pcolormesh (y, x)
-        
-        # Meshgrid for plotting
-        X, Y = np.meshgrid(x_nodes, y_nodes)
-        
-        # 2. Run PINN
-        # Create grid points matching FEA nodes
-        nx, ny = len(x_nodes), len(y_nodes)
-        X_flat = X.flatten()
-        Y_flat = Y.flatten()
-        Z_flat = np.ones_like(X_flat) * config.H
-        E_flat = np.ones_like(X_flat) * E_val
-        
-        # Prepare input (N, 4)
-        input_pts = np.stack([X_flat, Y_flat, Z_flat, E_flat], axis=1)
-        input_tensor = torch.tensor(input_pts, dtype=torch.float32).to(device)
-        
-        with torch.no_grad():
-            v_pinn_flat = pinn(input_tensor).cpu().numpy()
+        for idx, E_val in enumerate(E_test_values):
+            # 1. Run FEA
+            x_nodes, y_nodes, z_nodes, u_fea_grid = run_fea(E_val, thickness)
             
-        # Physics compliance scaling: u = v / E
-        u_pinn_flat = v_pinn_flat / (E_val)
+            # Extract Top Surface for Visualization
+            # u_fea_grid shape: (nx, ny, nz, 3)
+            u_z_fea_top = u_fea_grid[:, :, -1, 2].T # Transpose for pcolormesh (y, x)
             
-        u_z_pinn_top = u_pinn_flat[:, 2].reshape(ny, nx)
-        
-        # 3. Compute Error
-        abs_diff = np.abs(u_z_fea_top - u_z_pinn_top)
-        mae = np.mean(abs_diff)
-        max_err = np.max(abs_diff)
-        peak_fea = np.min(u_z_fea_top)
-        peak_pinn = np.min(u_z_pinn_top)
-        
-        print(f"\n--- Results for E={E_val} ---")
-        print(f"Peak Deflection FEA: {peak_fea:.6f}")
-        print(f"Peak Deflection PINN: {peak_pinn:.6f}")
-        print(f"MAE: {mae:.6f}")
-        print(f"Max Error: {max_err:.6f}")
-        
-        # 4. Plot
-        # Row 0: FEA
-        ax_fea = axes[0, idx]
-        c1 = ax_fea.contourf(X, Y, u_z_fea_top, levels=50, cmap="jet")
-        ax_fea.set_title(f"FEA (E={E_val})\nPeak: {peak_fea:.5f}")
-        plt.colorbar(c1, ax=ax_fea)
-        
-        # Row 1: PINN
-        ax_pinn = axes[1, idx]
-        c2 = ax_pinn.contourf(X, Y, u_z_pinn_top, levels=50, cmap="jet")
-        ax_pinn.set_title(f"PINN (E={E_val})\nPeak: {peak_pinn:.5f}")
-        plt.colorbar(c2, ax=ax_pinn)
-        
-        # Row 2: Error
-        ax_err = axes[2, idx]
-        c3 = ax_err.contourf(X, Y, abs_diff, levels=50, cmap="magma")
-        ax_err.set_title(f"Error (MAE: {mae:.5f})")
-        plt.colorbar(c3, ax=ax_err)
+            # Meshgrid for plotting
+            X, Y = np.meshgrid(x_nodes, y_nodes)
+            
+            # 2. Run PINN
+            # Create grid points matching FEA nodes
+            nx, ny = len(x_nodes), len(y_nodes)
+            X_flat = X.flatten()
+            Y_flat = Y.flatten()
+            Z_flat = np.ones_like(X_flat) * thickness
+            E_flat = np.ones_like(X_flat) * E_val
+            T_flat = np.ones_like(X_flat) * thickness
+            
+            # Prepare input (N, 5)
+            input_pts = np.stack([X_flat, Y_flat, Z_flat, E_flat, T_flat], axis=1)
+            input_tensor = torch.tensor(input_pts, dtype=torch.float32).to(device)
+            
+            with torch.no_grad():
+                v_pinn_flat = pinn(input_tensor).cpu().numpy()
+                
+            # Physics compliance scaling: u = v / E
+            u_pinn_flat = v_pinn_flat / (E_val)
+                
+            u_z_pinn_top = u_pinn_flat[:, 2].reshape(ny, nx)
+            
+            # 3. Compute Error
+            abs_diff = np.abs(u_z_fea_top - u_z_pinn_top)
+            mae = np.mean(abs_diff)
+            max_err = np.max(abs_diff)
+            peak_fea = np.min(u_z_fea_top)
+            peak_pinn = np.min(u_z_pinn_top)
+            
+            print(f"\n--- Results for E={E_val}, thickness={thickness} ---")
+            print(f"Peak Deflection FEA: {peak_fea:.6f}")
+            print(f"Peak Deflection PINN: {peak_pinn:.6f}")
+            print(f"MAE: {mae:.6f}")
+            print(f"Max Error: {max_err:.6f}")
+            
+            # 4. Plot
+            # Row 0: FEA
+            ax_fea = axes[0, idx]
+            c1 = ax_fea.contourf(X, Y, u_z_fea_top, levels=50, cmap="jet")
+            ax_fea.set_title(f"FEA (E={E_val}, t={thickness})\nPeak: {peak_fea:.5f}")
+            plt.colorbar(c1, ax=ax_fea)
+            
+            # Row 1: PINN
+            ax_pinn = axes[1, idx]
+            c2 = ax_pinn.contourf(X, Y, u_z_pinn_top, levels=50, cmap="jet")
+            ax_pinn.set_title(f"PINN (E={E_val}, t={thickness})\nPeak: {peak_pinn:.5f}")
+            plt.colorbar(c2, ax=ax_pinn)
+            
+            # Row 2: Error
+            ax_err = axes[2, idx]
+            c3 = ax_err.contourf(X, Y, abs_diff, levels=50, cmap="magma")
+            ax_err.set_title(f"Error (MAE: {mae:.5f})")
+            plt.colorbar(c3, ax=ax_err)
 
-    plt.tight_layout()
-    result_path = os.path.join(viz_dir, "parametric_verification.png")
-    plt.savefig(result_path)
-    print(f"\nVerification plot saved to: {result_path}")
+        plt.tight_layout()
+        result_path = os.path.join(viz_dir, f"parametric_verification_t{thickness:.3f}.png")
+        plt.savefig(result_path)
+        print(f"\nVerification plot saved to: {result_path}")
     # plt.show()
 
 if __name__ == "__main__":

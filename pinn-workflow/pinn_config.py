@@ -4,7 +4,7 @@ import numpy as np
 # --- Geometry Dimensions ---
 Lx = 1.0
 Ly = 1.0
-H = 0.1  # Total height
+H = 0.1  # Total height (baseline thickness)
 # Single layer (homogeneous material)
 # z goes from 0 to H
 Layer_Interfaces = [0.0, H]
@@ -16,7 +16,8 @@ E_vals = [1.0] # Normalized
 nu_vals = [0.3]
 # Parameterized PINN settings (do not alter baseline values)
 E_RANGE = [1.0, 10.0]
-PARAM_DIM = 1
+THICKNESS_RANGE = [0.05, 0.15]
+PARAM_DIM = 2
 
 def get_lame_params(E, nu):
     lm = (E * nu) / ((1 + nu) * (1 - 2 * nu))
@@ -58,7 +59,7 @@ WEIGHTS = {
     'load': 5.0, # Optimal load weight
     'energy': 0.63, # Per user request
     'interface_u': 1.0,
-    'data': 1.0   # Enabled (Golden Rule)
+    'data': 0.0   # Enabled (Golden Rule)
 }
 
 # Loss weight ramp: load-first to raise displacement while preserving shape.
@@ -92,3 +93,4 @@ FOURIER_SCALE = 1.0 # Standard deviation for frequency sampling
 # Hybrid / Parametric Training Data
 N_DATA_POINTS = 5000  # Increased for dense coverage
 DATA_E_VALUES = np.linspace(1.0, 10.0, 10).tolist() # [1.0, 2.0, ..., 10.0]
+USE_SUPERVISION_DATA = False

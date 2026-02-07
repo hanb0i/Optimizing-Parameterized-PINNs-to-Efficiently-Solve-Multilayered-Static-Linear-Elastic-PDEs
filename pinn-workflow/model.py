@@ -12,7 +12,7 @@ class FourierFeatures(nn.Module):
     def forward(self, x):
         # x: (N, 3)
         x_norm = x.clone()
-        x_norm[:, 2] = x_norm[:, 2] * 10.0  # Scale z to [0, 1]
+        x_norm[:, 2] = x_norm[:, 2]  # z is already normalized to [0, 1]
         x_proj = (2.0 * np.pi * x_norm) @ self.B
         return torch.cat([torch.sin(x_proj), torch.cos(x_proj)], dim=-1)
 
@@ -21,9 +21,9 @@ class LayerNet(nn.Module):
                  fourier_dim=0, fourier_scale=1.0):
         super().__init__()
         layers = []
-        # Input: x, y, z (and E as an extra channel)
+        # Input: x, y, z (and E, thickness as extra channels)
         self.fourier = FourierFeatures(3, fourier_dim, fourier_scale) if fourier_dim > 0 else None
-        current_dim = (2 * fourier_dim + 1) if fourier_dim > 0 else 4
+        current_dim = (2 * fourier_dim + 2) if fourier_dim > 0 else 5
         
         layers.append(nn.Linear(current_dim, hidden_units))
         layers.append(activation)
@@ -47,10 +47,7 @@ class LayerNet(nn.Module):
                 nn.init.constant_(m.bias, 0)
                 
     def forward(self, x):
-        # x shape: (N, 4) -> [x, y, z, E]
-        # Scale z coordinate by 10 to match x,y range [0,1]
-        # Normalize E from [1, 10] to approx [0, 1] for better conditioning
-        # E_norm = (E - 1) / 9
+        # x shape: (N, 5) -> [x, y, z, E, thickness]
         
         # Use torch.cat to preserve gradient flow
         # x_scaled = [x, y, z*10, E_norm]
@@ -59,17 +56,25 @@ class LayerNet(nn.Module):
         y_coord = x[:, 1:2]
         z_coord = x[:, 2:3]
         e_param = x[:, 3:4]
+        t_param = x[:, 4:5]
         
         e_min, e_max = config.E_RANGE
         e_span = (e_max - e_min) if (e_max - e_min) != 0 else 1.0
         e_norm = (e_param - e_min) / e_span
+
+        t_min, t_max = config.THICKNESS_RANGE
+        t_span = (t_max - t_min) if (t_max - t_min) != 0 else 1.0
+        t_norm = (t_param - t_min) / t_span
+
+        t_safe = torch.clamp(t_param, min=1e-6)
+        z_hat = z_coord / t_safe
         
         if self.fourier is not None:
-            xyz = torch.cat([x_coord, y_coord, z_coord], dim=1)
+            xyz = torch.cat([x_coord, y_coord, z_hat], dim=1)
             ff = self.fourier(xyz)
-            x_scaled = torch.cat([ff, e_norm], dim=1)
+            x_scaled = torch.cat([ff, e_norm, t_norm], dim=1)
         else:
-            x_scaled = torch.cat([x_coord, y_coord, z_coord * 10.0, e_norm], dim=1)
+            x_scaled = torch.cat([x_coord, y_coord, z_hat, e_norm, t_norm], dim=1)
         
         u_raw = self.net(x_scaled)
         
@@ -99,7 +104,7 @@ class MultiLayerPINN(nn.Module):
         )
         
     def forward(self, x, layer_idx=0):
-        # x: (N, 4) -> [x, y, z, E]
+        # x: (N, 5) -> [x, y, z, E, thickness]
         
         # 1. Compute the normalized potential/shape 'v'
         v = self.layer(x)

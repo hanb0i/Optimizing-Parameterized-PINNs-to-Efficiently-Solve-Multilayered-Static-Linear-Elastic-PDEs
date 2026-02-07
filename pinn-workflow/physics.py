@@ -93,6 +93,7 @@ def compute_loss(model, data, device, weights=None):
     
     # Dynamic material properties
     E_local = x_int[:, 3:4]
+    t_local = x_int[:, 4:5]
     nu = config.nu_vals[0]
     lm = (E_local * nu) / ((1 + nu) * (1 - 2 * nu))
     mu = E_local / (2 * (1 + nu))
@@ -111,7 +112,7 @@ def compute_loss(model, data, device, weights=None):
     div_sigma = divergence(sig, x_int)
     
     # Equilibrium: -div(sigma) = 0 (scale to stress units)
-    residual = -div_sigma * config.PDE_LENGTH_SCALE
+    residual = -div_sigma * t_local
     
     pde_loss = torch.mean(residual**2)
     losses['pde'] = pde_loss
@@ -119,7 +120,7 @@ def compute_loss(model, data, device, weights=None):
     
     # Internal strain energy (volume integral, approximated by mean * volume)
     energy_density = 0.5 * torch.einsum('bij,bij->b', eps, sig)
-    internal_energy = energy_density.mean() * (config.Lx * config.Ly * config.H)
+    internal_energy = energy_density.mean() * (config.Lx * config.Ly * t_local.mean())
     
     # --- 2. Dirichlet BCs (Clamped Sides) ---
     x_side = data['sides'][0].to(device)
@@ -245,6 +246,7 @@ def compute_residuals(model, data, device):
     x_int.requires_grad = True
     
     E_local = x_int[:, 3:4]
+    t_local = x_int[:, 4:5]
     nu = config.nu_vals[0]
     lm = (E_local * nu) / ((1 + nu) * (1 - 2 * nu))
     mu = E_local / (2 * (1 + nu))
@@ -258,7 +260,7 @@ def compute_residuals(model, data, device):
     sig = stress(eps, lm, mu)
     div_sigma = divergence(sig, x_int)
     
-    residual = -div_sigma * config.PDE_LENGTH_SCALE
+    residual = -div_sigma * t_local
     residual_mag = torch.sqrt(torch.sum(residual**2, dim=1))
     residuals['interior'] = residual_mag.cpu()
     
