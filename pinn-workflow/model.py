@@ -86,14 +86,10 @@ class LayerNet(nn.Module):
         h_ref = getattr(config, 'H', 0.1)
         ratio = h_ref / t_safe 
         
-        # We normalize these features to be roughly [-1, 1] or [0, 1] based on the data range.
-        # Data range for t is [0.05, 0.15] -> ratio in [0.66, 2.0]
-        # ratio^3 in [0.29, 8.0]
-        # Let's simply scale them down by their expected max values so they are O(1).
-        
-        feat_inv1 = (ratio - 1.0) # Center around H_ref
-        feat_inv2 = (ratio**2 - 2.0) / 2.0 
-        feat_inv3 = (ratio**3 - 4.0) / 4.0 # Scale down the cubic term aggressively
+        # Raw physics scaling features as requested.
+        feat_inv1 = ratio
+        feat_inv2 = ratio ** 2
+        feat_inv3 = ratio ** 3
         
         extra_feats = torch.cat([feat_inv1, feat_inv2, feat_inv3], dim=1)
         
