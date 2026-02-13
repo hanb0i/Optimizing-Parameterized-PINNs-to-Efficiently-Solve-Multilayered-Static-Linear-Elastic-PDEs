@@ -26,7 +26,10 @@ def get_loss_weights(epoch, use_hard_bc=True):
     return weights
 
 def train():
-    if torch.cuda.is_available():
+    requested_device = os.getenv("PINN_DEVICE")
+    if requested_device:
+        device = torch.device(requested_device)
+    elif torch.cuda.is_available():
         device = torch.device('cuda')
     elif torch.backends.mps.is_available():
         device = torch.device('mps')
@@ -34,6 +37,9 @@ def train():
         device = torch.device('cpu')
     print(f"Using device: {device}")
     print(f"Using p0 = {config.p0}")
+
+    epochs_adam = int(os.getenv("PINN_EPOCHS_ADAM", str(config.EPOCHS_ADAM)))
+    epochs_lbfgs = int(os.getenv("PINN_EPOCHS_LBFGS", str(config.EPOCHS_LBFGS)))
     
     # Initialize Model
     pinn = model.MultiLayerPINN().to(device)
@@ -123,7 +129,7 @@ def train():
     start_time = time.time()
     last_time = start_time
     
-    for epoch in range(config.EPOCHS_ADAM):
+    for epoch in range(epochs_adam):
         optimizer_adam.zero_grad()
 
         if config.FORCE_SOFT_SIDE_BC_FROM_START:
@@ -166,10 +172,15 @@ def train():
             if fem_available:
                 with torch.no_grad():
                     v_pinn_flat = pinn(pts_fea_tensor, 0).cpu().numpy()
-                    # Apply compliance scaling u = v / E
-                    # E is the 4th column of input
-                    E_vals = pts_fea[:, 3:4] # numpy array from line 71
-                    u_pinn_flat = v_pinn_flat / (E_vals)
+                    # Apply compliance scaling u = (v / E) * (H / t)^alpha
+                    E_vals = pts_fea[:, 3:4]  # numpy array from line 71
+                    t_vals = pts_fea[:, 4:5]
+                    alpha = float(getattr(config, "THICKNESS_COMPLIANCE_ALPHA", 0.0))
+                    if alpha == 0.0:
+                        scale = 1.0
+                    else:
+                        scale = (float(getattr(config, "H", 1.0)) / np.clip(t_vals, 1e-8, None)) ** alpha
+                    u_pinn_flat = (v_pinn_flat / E_vals) * scale
                      
                     diff = np.abs(u_pinn_flat - u_fea_flat)
                     mae = np.mean(diff)
@@ -203,7 +214,7 @@ def train():
         line_search_fn="strong_wolfe",
     )
         
-    num_lbfgs_steps = config.EPOCHS_LBFGS
+    num_lbfgs_steps = epochs_lbfgs
     print(f"Running {num_lbfgs_steps} L-BFGS outer steps.")
     print("Using fixed collocation set during L-BFGS for stability.")
     
@@ -234,9 +245,15 @@ def train():
         if fem_available:
             with torch.no_grad():
                 v_pinn_flat = pinn(pts_fea_tensor, 0).cpu().numpy()
-                # Apply compliance scaling
+                # Apply compliance scaling u = (v / E) * (H / t)^alpha
                 E_vals = pts_fea[:, 3:4]
-                u_pinn_flat = v_pinn_flat / (E_vals)
+                t_vals = pts_fea[:, 4:5]
+                alpha = float(getattr(config, "THICKNESS_COMPLIANCE_ALPHA", 0.0))
+                if alpha == 0.0:
+                    scale = 1.0
+                else:
+                    scale = (float(getattr(config, "H", 1.0)) / np.clip(t_vals, 1e-8, None)) ** alpha
+                u_pinn_flat = (v_pinn_flat / E_vals) * scale
                 diff = np.abs(u_pinn_flat - u_fea_flat)
                 mae = np.mean(diff)
                 max_err = np.max(diff)

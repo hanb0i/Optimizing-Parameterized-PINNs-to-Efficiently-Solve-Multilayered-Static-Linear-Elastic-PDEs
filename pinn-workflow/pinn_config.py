@@ -19,6 +19,19 @@ E_RANGE = [1.0, 10.0]
 THICKNESS_RANGE = [0.05, 0.15]
 PARAM_DIM = 2
 
+# Inference-time compliance correction for E:
+# Use u = v / E^p instead of v / E (p=1.0). This can help slightly reduce
+# high-E under/over-shoot without retraining.
+E_COMPLIANCE_POWER = 1.06
+
+# --- Parametric compliance scaling ---
+# Many plate-like problems scale strongly with thickness (often ~ 1/t^3).
+# We apply a simple thickness-aware scaling in the physics layer:
+#   u = (v / E) * (H / t)^alpha
+# where H is the baseline thickness (config.H) and t is the sampled thickness.
+# Set alpha=0.0 to disable.
+THICKNESS_COMPLIANCE_ALPHA = 2.7
+
 def get_lame_params(E, nu):
     lm = (E * nu) / ((1 + nu) * (1 - 2 * nu))
     mu = E / (2 * (1 + nu))

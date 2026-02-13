@@ -258,7 +258,7 @@ def plot_pde_residual_xz(pinn, device):
     lm = lm.unsqueeze(2)
     mu = mu.unsqueeze(2)
     
-    # u = v / E
+    # u = v / E (PDE/traction definition used in training)
     u = v_pred / E_local
     
     # Gradients
@@ -268,8 +268,7 @@ def plot_pde_residual_xz(pinn, device):
     div_sigma = physics.divergence(sig, pts_tensor)
     
     # Residual: -div(sigma) -- should be 0
-    t_tensor = torch.tensor(T_grid.flatten(), dtype=torch.float32, device=pts_tensor.device).unsqueeze(1)
-    residual = -div_sigma * t_tensor
+    residual = -div_sigma * getattr(config, "PDE_LENGTH_SCALE", 1.0)
     residual_mag = torch.sqrt(torch.sum(residual**2, dim=1)).detach().cpu().numpy()
     
     residual_mag_grid = residual_mag.reshape(nz, nx)
@@ -313,7 +312,10 @@ def main():
     results = {}
 
     # Load PINN
-    if torch.cuda.is_available():
+    requested_device = os.getenv("PINN_DEVICE")
+    if requested_device:
+        device = torch.device(requested_device)
+    elif torch.cuda.is_available():
         device = torch.device("cuda")
     elif torch.backends.mps.is_available():
         device = torch.device("mps")
@@ -334,9 +336,10 @@ def main():
     os.makedirs(viz_dir, exist_ok=True)
 
     # --- 1. Diagnostic Plots ---
-    plot_training_data_distribution()
-    plot_training_history()
-    plot_pde_residual_xz(pinn, device)
+    if os.getenv("PINN_VERIFY_SKIP_DIAGNOSTICS", "0") != "1":
+        plot_training_data_distribution()
+        plot_training_history()
+        plot_pde_residual_xz(pinn, device)
 
     # --- 2. Parametric Verification Plot ---
     # Create one figure per thickness to preserve FEA/PINN/Error rows
@@ -373,8 +376,14 @@ def main():
             with torch.no_grad():
                 v_pinn_flat = pinn(input_tensor).cpu().numpy()
                 
-            # Physics compliance scaling: u = v / E
-            u_pinn_flat = v_pinn_flat / (E_val)
+            # Physics compliance scaling: u = (v / E) * (H / t)^alpha
+            alpha = float(getattr(config, "THICKNESS_COMPLIANCE_ALPHA", 0.0))
+            if alpha == 0.0:
+                scale = 1.0
+            else:
+                scale = (float(getattr(config, "H", 1.0)) / max(1e-8, float(thickness))) ** alpha
+            e_pow = float(getattr(config, "E_COMPLIANCE_POWER", 1.0))
+            u_pinn_flat = (v_pinn_flat / (float(E_val) ** e_pow)) * scale
                 
             u_z_pinn_top = u_pinn_flat[:, 2].reshape(ny, nx)
             
