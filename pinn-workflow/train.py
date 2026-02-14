@@ -12,6 +12,28 @@ import model
 import physics
 import matplotlib.pyplot as plt
 
+def _load_compatible_state_dict(pinn, ckpt_path, device):
+    sd = torch.load(ckpt_path, map_location=device, weights_only=True)
+    target_sd = pinn.state_dict()
+    w_key = "layer.net.0.weight"
+    if w_key in sd and w_key in target_sd:
+        src_w = sd[w_key]
+        tgt_w = target_sd[w_key]
+        if src_w.shape != tgt_w.shape and src_w.shape[0] == tgt_w.shape[0]:
+            # Old parametric model: [x,y,z,E,t,inv1,inv2,inv3] -> new adds [r,mu]
+            if src_w.shape[1] == 8 and tgt_w.shape[1] == 10:
+                adapted = torch.zeros_like(tgt_w)
+                adapted[:, 0:5] = src_w[:, 0:5]
+                adapted[:, 7:10] = src_w[:, 5:8]
+                sd[w_key] = adapted
+                print("Adapted first-layer weights from 8->10 inputs (inserted neutral r/mu channels).")
+    missing, unexpected = pinn.load_state_dict(sd, strict=False)
+    print(f"Warm-start loaded from {ckpt_path}")
+    if missing:
+        print(f"  Missing keys: {len(missing)}")
+    if unexpected:
+        print(f"  Unexpected keys: {len(unexpected)}")
+
 def get_loss_weights(epoch, use_hard_bc=True):
     weights = dict(config.WEIGHTS)
     if config.WEIGHT_RAMP_EPOCHS > 0 and epoch < config.WEIGHT_RAMP_EPOCHS:
@@ -44,6 +66,12 @@ def train():
     # Initialize Model
     pinn = model.MultiLayerPINN().to(device)
     print(pinn)
+    if os.getenv("PINN_WARM_START", "1") == "1":
+        ckpt_candidates = ["pinn_model.pth", os.path.join("..", "pinn_model.pth")]
+        for ckpt in ckpt_candidates:
+            if os.path.exists(ckpt):
+                _load_compatible_state_dict(pinn, ckpt, device)
+                break
     if config.FORCE_SOFT_SIDE_BC_FROM_START:
         config.USE_HARD_SIDE_BC = False
         pinn.set_hard_bc(False)
@@ -75,7 +103,11 @@ def train():
         pts_fea = np.stack([X_fea.ravel(), Y_fea.ravel(), Z_fea.ravel()], axis=1)
         e_ones = np.ones((pts_fea.shape[0], 1)) * config.E_vals[0]
         t_ones = np.ones((pts_fea.shape[0], 1)) * config.H
-        pts_fea = np.hstack([pts_fea, e_ones, t_ones])
+        r_ref = float(getattr(config, "RESTITUTION_REF", 0.5))
+        mu_ref = float(getattr(config, "FRICTION_REF", 0.3))
+        r_ones = np.ones((pts_fea.shape[0], 1)) * r_ref
+        mu_ones = np.ones((pts_fea.shape[0], 1)) * mu_ref
+        pts_fea = np.hstack([pts_fea, e_ones, t_ones, r_ones, mu_ones])
         pts_fea_tensor = torch.tensor(pts_fea, dtype=torch.float32).to(device)
         u_fea_flat = U_fea.reshape(-1, 3)
         
@@ -107,6 +139,7 @@ def train():
         'free_bot': [],
         'load': [],
         'energy': [],
+        'impact_invariance': [],
         'fem_mae': [],
         'fem_max_err': [],
         'epochs': []
@@ -120,6 +153,7 @@ def train():
         'free_bot': [],
         'load': [],
         'energy': [],
+        'impact_invariance': [],
         'fem_mae': [],
         'fem_max_err': [],
         'steps': []
@@ -161,6 +195,7 @@ def train():
         adam_history['free_bot'].append(losses['free_bot'].item())
         adam_history['load'].append(losses['load'].item())
         adam_history['energy'].append(losses['energy'].item())
+        adam_history['impact_invariance'].append(losses.get('impact_invariance', torch.tensor(0.0)).item())
         
         if epoch % 100 == 0:
             current_time = time.time()
@@ -193,13 +228,16 @@ def train():
                 print(f"Epoch {epoch}: Total Loss: {loss_val.item():.6f} | "
                       f"PDE: {losses['pde']:.6f} | BC_sides: {losses['bc_sides']:.6f} | "
                       f"Free_top: {losses['free_top']:.6f} | Free_bot: {losses['free_bot']:.6f} | "
-                      f"Load: {losses['load']:.6f} | Energy: {losses['energy']:.6f} | LR: {current_lr:.2e} | "
+                      f"Load: {losses['load']:.6f} | Energy: {losses['energy']:.6f} | "
+                      f"ImpactInv: {losses.get('impact_invariance', torch.tensor(0.0)).item():.6f} | "
+                      f"LR: {current_lr:.2e} | "
                       f"FEM MAE: {mae:.6f} | Time: {step_duration:.4f}s")
             else:
                 print(f"Epoch {epoch}: Total Loss: {loss_val.item():.6f} | "
                       f"PDE: {losses['pde']:.6f} | BC_sides: {losses['bc_sides']:.6f} | "
                       f"Free_top: {losses['free_top']:.6f} | Free_bot: {losses['free_bot']:.6f} | "
                       f"Load: {losses['load']:.6f} | Energy: {losses['energy']:.6f} | "
+                      f"ImpactInv: {losses.get('impact_invariance', torch.tensor(0.0)).item():.6f} | "
                       f"LR: {current_lr:.2e} | Time: {step_duration:.4f}s")
             
     print(f"SOAP Pretraining Complete. Total Time: {time.time() - start_time:.2f}s")
@@ -241,6 +279,7 @@ def train():
         lbfgs_history['free_bot'].append(losses['free_bot'].item())
         lbfgs_history['load'].append(losses['load'].item())
         lbfgs_history['energy'].append(losses['energy'].item())
+        lbfgs_history['impact_invariance'].append(losses.get('impact_invariance', torch.tensor(0.0)).item())
         
         # Compute FEM error and print
         if fem_available:
@@ -266,12 +305,14 @@ def train():
                   f"BC_sides: {losses['bc_sides'].item():.6e} | Free_top: {losses['free_top'].item():.6e} | "
                   f"Free_bot: {losses['free_bot'].item():.6e} | Load: {losses['load'].item():.6e} | "
                   f"Energy: {losses['energy'].item():.6e} | "
+                  f"ImpactInv: {losses.get('impact_invariance', torch.tensor(0.0)).item():.6e} | "
                   f"FEM MAE: {mae:.6e} | Time: {step_end - step_start:.4f}s")
         else:
             print(f"L-BFGS Step {i}: Total Loss: {loss_val.item():.6e} | PDE: {losses['pde'].item():.6e} | "
                   f"BC_sides: {losses['bc_sides'].item():.6e} | Free_top: {losses['free_top'].item():.6e} | "
                   f"Free_bot: {losses['free_bot'].item():.6e} | Load: {losses['load'].item():.6e} | "
                   f"Energy: {losses['energy'].item():.6e} | "
+                  f"ImpactInv: {losses.get('impact_invariance', torch.tensor(0.0)).item():.6e} | "
                   f"Time: {step_end - step_start:.4f}s")
         
         # Save model at every L-BFGS step

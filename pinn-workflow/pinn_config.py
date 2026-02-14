@@ -17,11 +17,20 @@ nu_vals = [0.3]
 # Parameterized PINN settings (do not alter baseline values)
 E_RANGE = [1.0, 10.0]
 THICKNESS_RANGE = [0.05, 0.15]
-PARAM_DIM = 2
+RESTITUTION_RANGE = [0.1, 0.9]
+FRICTION_RANGE = [0.0, 0.6]
+PARAM_DIM = 4
 
 # Optional: explicit E sweep values for `verify_parametric_pinn.py`.
 # If not set, it uses `np.linspace(E_RANGE[0], E_RANGE[1], PINN_VERIFY_E_STEPS)`.
 # VERIFY_E_SWEEP_VALUES = np.linspace(E_RANGE[0], E_RANGE[1], 10).tolist()
+# Optional: explicit restitution/friction sweep values for verification.
+# VERIFY_RESTITUTION_SWEEP_VALUES = np.linspace(RESTITUTION_RANGE[0], RESTITUTION_RANGE[1], 7).tolist()
+# VERIFY_FRICTION_SWEEP_VALUES = np.linspace(FRICTION_RANGE[0], FRICTION_RANGE[1], 7).tolist()
+
+# Reference parameter values for parity with baseline FEA (which has no restitution/friction).
+RESTITUTION_REF = 0.5
+FRICTION_REF = 0.3
 
 # Inference-time compliance correction for E:
 # Use u = v / E^p instead of v / E (p=1.0). This can help slightly reduce
@@ -75,6 +84,7 @@ WEIGHTS = {
     'bc': 0.7,      # Slightly softer sides so load can gather more budget
     'load': 5.0, # Optimal load weight
     'energy': 0.63, # Per user request
+    'impact_invariance': 0.5,  # Keep restitution/friction neutral until explicit impact physics is added
     'interface_u': 1.0,
     'data': 0.0   # Enabled (Golden Rule)
 }

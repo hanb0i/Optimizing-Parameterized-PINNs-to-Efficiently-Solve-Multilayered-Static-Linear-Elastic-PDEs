@@ -116,10 +116,26 @@ def compute_loss(model, data, device, weights=None):
     lm = lm.unsqueeze(2)
     mu = mu.unsqueeze(2)
     
+    v_int = model(x_int, 0)
+
+    # Until explicit impact dynamics are modeled, restitution/friction should be neutral.
+    # Enforce output invariance by re-evaluating same spatial/E/t points at randomized
+    # restitution/friction values and penalizing output drift.
+    x_int_variant = x_int.clone()
+    r_min, r_max = getattr(config, "RESTITUTION_RANGE", (0.5, 0.5))
+    mu_min, mu_max = getattr(config, "FRICTION_RANGE", (0.3, 0.3))
+    if r_max > r_min:
+        x_int_variant[:, 5:6] = torch.rand_like(x_int_variant[:, 5:6]) * (r_max - r_min) + r_min
+    if mu_max > mu_min:
+        x_int_variant[:, 6:7] = torch.rand_like(x_int_variant[:, 6:7]) * (mu_max - mu_min) + mu_min
+    v_int_variant = model(x_int_variant, 0)
+    impact_invariance_loss = torch.mean((v_int - v_int_variant) ** 2)
+    losses['impact_invariance'] = impact_invariance_loss
+    total_loss += weights.get('impact_invariance', 0.0) * impact_invariance_loss
+
     # Predict displacement u = v / E to handle parameter range.
     # NOTE: Thickness compliance scaling (H/t)^alpha is applied at evaluation/plot time,
     # not inside the PDE/traction losses, because the traction BC can otherwise cancel it.
-    v_int = model(x_int, 0)
     u = v_int / E_local
     
     grad_u = gradient(u, x_int)

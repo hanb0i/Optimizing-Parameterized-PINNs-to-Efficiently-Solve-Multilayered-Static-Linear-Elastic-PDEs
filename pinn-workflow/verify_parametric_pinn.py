@@ -21,6 +21,26 @@ import fem_solver
 import data
 import physics
 
+def _load_compatible_state_dict(pinn, model_path, device):
+    sd = torch.load(model_path, map_location=device, weights_only=True)
+    target_sd = pinn.state_dict()
+    w_key = "layer.net.0.weight"
+    if w_key in sd and w_key in target_sd:
+        src_w = sd[w_key]
+        tgt_w = target_sd[w_key]
+        if src_w.shape != tgt_w.shape and src_w.shape[0] == tgt_w.shape[0]:
+            if src_w.shape[1] == 8 and tgt_w.shape[1] == 10:
+                adapted = torch.zeros_like(tgt_w)
+                adapted[:, 0:5] = src_w[:, 0:5]
+                adapted[:, 7:10] = src_w[:, 5:8]
+                sd[w_key] = adapted
+                print("Adapted checkpoint first-layer weights from 8->10 inputs.")
+    missing, unexpected = pinn.load_state_dict(sd, strict=False)
+    if missing:
+        print(f"Missing keys while loading checkpoint: {len(missing)}")
+    if unexpected:
+        print(f"Unexpected keys while loading checkpoint: {len(unexpected)}")
+
 def _get_e_sweep_values():
     if hasattr(config, "VERIFY_E_SWEEP_VALUES"):
         return [float(v) for v in config.VERIFY_E_SWEEP_VALUES]
@@ -28,6 +48,18 @@ def _get_e_sweep_values():
     steps = int(os.getenv("PINN_VERIFY_E_STEPS", "10"))
     steps = max(2, steps)
     return np.linspace(float(e_min), float(e_max), steps).tolist()
+
+def _get_restitution_sweep_values():
+    if hasattr(config, "VERIFY_RESTITUTION_SWEEP_VALUES"):
+        return [float(v) for v in config.VERIFY_RESTITUTION_SWEEP_VALUES]
+    r_min, r_max = config.RESTITUTION_RANGE
+    return np.linspace(float(r_min), float(r_max), 7).tolist()
+
+def _get_friction_sweep_values():
+    if hasattr(config, "VERIFY_FRICTION_SWEEP_VALUES"):
+        return [float(v) for v in config.VERIFY_FRICTION_SWEEP_VALUES]
+    mu_min, mu_max = config.FRICTION_RANGE
+    return np.linspace(float(mu_min), float(mu_max), 7).tolist()
 
 def _u_from_v(v_pinn_flat, E_val, thickness):
     alpha = float(getattr(config, "THICKNESS_COMPLIANCE_ALPHA", 0.0))
@@ -37,6 +69,12 @@ def _u_from_v(v_pinn_flat, E_val, thickness):
         t_scale = (float(getattr(config, "H", 1.0)) / max(1e-8, float(thickness))) ** alpha
     e_pow = float(getattr(config, "E_COMPLIANCE_POWER", 1.0))
     return (v_pinn_flat / (float(E_val) ** e_pow)) * t_scale
+
+def _ref_param_values():
+    return (
+        float(getattr(config, "RESTITUTION_REF", 0.5)),
+        float(getattr(config, "FRICTION_REF", 0.3)),
+    )
 
 def verify_e_sweep(pinn, device, thickness_values, viz_dir, fea_refs=None):
     """Verify E-parametrization by comparing peak top-surface u_z vs E.
@@ -63,6 +101,7 @@ def verify_e_sweep(pinn, device, thickness_values, viz_dir, fea_refs=None):
         Y_flat = Y.flatten()
         Z_flat = np.ones_like(X_flat) * thickness
         T_flat = np.ones_like(X_flat) * thickness
+        r_ref, mu_ref = _ref_param_values()
 
         fea_peaks = []
         pinn_peaks = []
@@ -73,7 +112,9 @@ def verify_e_sweep(pinn, device, thickness_values, viz_dir, fea_refs=None):
             peak_fea = float(np.min(u_z_fea_top))
 
             E_flat = np.ones_like(X_flat) * E_val
-            input_pts = np.stack([X_flat, Y_flat, Z_flat, E_flat, T_flat], axis=1)
+            R_flat = np.ones_like(X_flat) * r_ref
+            MU_flat = np.ones_like(X_flat) * mu_ref
+            input_pts = np.stack([X_flat, Y_flat, Z_flat, E_flat, T_flat, R_flat, MU_flat], axis=1)
             input_tensor = torch.tensor(input_pts, dtype=torch.float32).to(device)
             with torch.no_grad():
                 v_pinn_flat = pinn(input_tensor).cpu().numpy()
@@ -108,6 +149,132 @@ def verify_e_sweep(pinn, device, thickness_values, viz_dir, fea_refs=None):
         plt.savefig(out_path)
         print(f"  Saved {out_path}")
         plt.close()
+
+def verify_impact_param_sweeps(pinn, device, thickness_values, viz_dir, e_values=(1.0, 5.0, 10.0), fea_refs=None):
+    """Verify restitution/friction parametrization against invariant FEA baseline.
+
+    Current physics model has no restitution/friction terms, so expected behavior
+    is invariance with respect to these two parameters.
+    """
+    r_values = _get_restitution_sweep_values()
+    mu_values = _get_friction_sweep_values()
+    r_ref, mu_ref = _ref_param_values()
+
+    print("\n=== Restitution/Friction Sweep Verification (Invariant-to-FEA Check) ===")
+    summary = []
+    for thickness in thickness_values:
+        if fea_refs is not None and thickness in fea_refs:
+            x_nodes, y_nodes, z_nodes, u_fea_ref = fea_refs[thickness]
+        else:
+            x_nodes, y_nodes, z_nodes, u_fea_ref = run_fea(1.0, thickness)
+        u_fea_ref = np.array(u_fea_ref, dtype=float)
+
+        X, Y = np.meshgrid(x_nodes, y_nodes)
+        nx, ny = len(x_nodes), len(y_nodes)
+        X_flat = X.flatten()
+        Y_flat = Y.flatten()
+        Z_flat = np.ones_like(X_flat) * thickness
+        T_flat = np.ones_like(X_flat) * thickness
+
+        for E_val in e_values:
+            u_z_fea_top = (u_fea_ref * (1.0 / float(E_val)))[:, :, -1, 2].T
+            peak_fea = float(np.min(u_z_fea_top))
+            E_flat_ref = np.ones_like(X_flat) * E_val
+            R_flat_ref = np.ones_like(X_flat) * r_ref
+            MU_flat_ref = np.ones_like(X_flat) * mu_ref
+            input_ref = np.stack([X_flat, Y_flat, Z_flat, E_flat_ref, T_flat, R_flat_ref, MU_flat_ref], axis=1)
+            with torch.no_grad():
+                v_ref_flat = pinn(torch.tensor(input_ref, dtype=torch.float32).to(device)).cpu().numpy()
+            peak_ref = float(np.min(_u_from_v(v_ref_flat, E_val, thickness)[:, 2].reshape(ny, nx)))
+
+            # Restitution sweep (mu fixed)
+            r_peaks = []
+            r_rel_errs = []
+            r_param_drifts = []
+            for r_val in r_values:
+                E_flat = np.ones_like(X_flat) * E_val
+                R_flat = np.ones_like(X_flat) * r_val
+                MU_flat = np.ones_like(X_flat) * mu_ref
+                input_pts = np.stack([X_flat, Y_flat, Z_flat, E_flat, T_flat, R_flat, MU_flat], axis=1)
+                input_tensor = torch.tensor(input_pts, dtype=torch.float32).to(device)
+                with torch.no_grad():
+                    v_pinn_flat = pinn(input_tensor).cpu().numpy()
+                u_pinn_flat = _u_from_v(v_pinn_flat, E_val, thickness)
+                peak_pinn = float(np.min(u_pinn_flat[:, 2].reshape(ny, nx)))
+                r_peaks.append(peak_pinn)
+                r_rel_errs.append(abs((peak_pinn - peak_fea) / peak_fea) if peak_fea != 0 else np.nan)
+                r_param_drifts.append(abs((peak_pinn - peak_ref) / peak_ref) if peak_ref != 0 else np.nan)
+
+            # Friction sweep (r fixed)
+            mu_peaks = []
+            mu_rel_errs = []
+            mu_param_drifts = []
+            for mu_val in mu_values:
+                E_flat = np.ones_like(X_flat) * E_val
+                R_flat = np.ones_like(X_flat) * r_ref
+                MU_flat = np.ones_like(X_flat) * mu_val
+                input_pts = np.stack([X_flat, Y_flat, Z_flat, E_flat, T_flat, R_flat, MU_flat], axis=1)
+                input_tensor = torch.tensor(input_pts, dtype=torch.float32).to(device)
+                with torch.no_grad():
+                    v_pinn_flat = pinn(input_tensor).cpu().numpy()
+                u_pinn_flat = _u_from_v(v_pinn_flat, E_val, thickness)
+                peak_pinn = float(np.min(u_pinn_flat[:, 2].reshape(ny, nx)))
+                mu_peaks.append(peak_pinn)
+                mu_rel_errs.append(abs((peak_pinn - peak_fea) / peak_fea) if peak_fea != 0 else np.nan)
+                mu_param_drifts.append(abs((peak_pinn - peak_ref) / peak_ref) if peak_ref != 0 else np.nan)
+
+            print(f"\nThickness t={thickness}, E={E_val}:")
+            print(f"  Restitution sweep peak rel error: mean={float(np.nanmean(r_rel_errs)):.3f}, max={float(np.nanmax(r_rel_errs)):.3f}")
+            print(f"  Friction sweep peak rel error: mean={float(np.nanmean(mu_rel_errs)):.3f}, max={float(np.nanmax(mu_rel_errs)):.3f}")
+            print(f"  Restitution parametrization drift vs ref: mean={float(np.nanmean(r_param_drifts)):.3f}, max={float(np.nanmax(r_param_drifts)):.3f}")
+            print(f"  Friction parametrization drift vs ref: mean={float(np.nanmean(mu_param_drifts)):.3f}, max={float(np.nanmax(mu_param_drifts)):.3f}")
+            summary.append({
+                "t": float(thickness),
+                "E": float(E_val),
+                "r_mean": float(np.nanmean(r_rel_errs)),
+                "r_max": float(np.nanmax(r_rel_errs)),
+                "mu_mean": float(np.nanmean(mu_rel_errs)),
+                "mu_max": float(np.nanmax(mu_rel_errs)),
+                "r_param_mean": float(np.nanmean(r_param_drifts)),
+                "r_param_max": float(np.nanmax(r_param_drifts)),
+                "mu_param_mean": float(np.nanmean(mu_param_drifts)),
+                "mu_param_max": float(np.nanmax(mu_param_drifts)),
+            })
+
+            fig, axes = plt.subplots(1, 2, figsize=(12, 4.5))
+            axes[0].plot(r_values, r_peaks, "o-", label="PINN peak u_z")
+            axes[0].axhline(peak_fea, color="black", linestyle="--", label="FEA peak u_z")
+            axes[0].set_title(f"Restitution sweep | t={thickness}, E={E_val}")
+            axes[0].set_xlabel("restitution")
+            axes[0].set_ylabel("Peak u_z")
+            axes[0].grid(True, alpha=0.3)
+            axes[0].legend()
+
+            axes[1].plot(mu_values, mu_peaks, "o-", label="PINN peak u_z")
+            axes[1].axhline(peak_fea, color="black", linestyle="--", label="FEA peak u_z")
+            axes[1].set_title(f"Friction sweep | t={thickness}, E={E_val}")
+            axes[1].set_xlabel("friction")
+            axes[1].set_ylabel("Peak u_z")
+            axes[1].grid(True, alpha=0.3)
+            axes[1].legend()
+
+            plt.tight_layout()
+            out_path = os.path.join(viz_dir, f"impact_param_sweeps_t{thickness:.3f}_E{float(E_val):.1f}.png")
+            plt.savefig(out_path)
+            print(f"  Saved {out_path}")
+            plt.close()
+
+    if summary:
+        all_means = np.array([0.5 * (row["r_mean"] + row["mu_mean"]) for row in summary], dtype=float)
+        all_max = np.array([max(row["r_max"], row["mu_max"]) for row in summary], dtype=float)
+        all_param_means = np.array([0.5 * (row["r_param_mean"] + row["mu_param_mean"]) for row in summary], dtype=float)
+        all_param_max = np.array([max(row["r_param_max"], row["mu_param_max"]) for row in summary], dtype=float)
+        print("\nImpact-param sweep summary:")
+        print(f"  Combined mean peak rel error: {float(np.mean(all_means)):.3f}")
+        print(f"  Worst-case peak rel error: {float(np.max(all_max)):.3f}")
+        print(f"  Combined mean param-drift (vs PINN ref): {float(np.mean(all_param_means)):.3f}")
+        print(f"  Worst-case param-drift (vs PINN ref): {float(np.max(all_param_max)):.3f}")
+    return summary
 
 def plot_training_data_distribution():
     print("Generating Training Data Distribution Plot...")
@@ -326,7 +493,21 @@ def plot_pde_residual_xz(pinn, device):
     
     # Prepare input
     # Need to flatten
-    pts = np.stack([X_res.flatten(), Y_res.flatten(), Z_res.flatten(), E_grid.flatten(), T_grid.flatten()], axis=1)
+    r_ref, mu_ref = _ref_param_values()
+    R_grid = np.ones_like(X_res) * r_ref
+    MU_grid = np.ones_like(X_res) * mu_ref
+    pts = np.stack(
+        [
+            X_res.flatten(),
+            Y_res.flatten(),
+            Z_res.flatten(),
+            E_grid.flatten(),
+            T_grid.flatten(),
+            R_grid.flatten(),
+            MU_grid.flatten(),
+        ],
+        axis=1,
+    )
     pts_tensor = torch.tensor(pts, dtype=torch.float32).to(device)
     
     # Reuse compute_residuals logic but just for this grid
@@ -416,7 +597,7 @@ def main():
         model_path = os.path.join(REPO_ROOT, "pinn_model.pth")
         
     print(f"Loading model from: {model_path}")
-    pinn.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
+    _load_compatible_state_dict(pinn, model_path, device)
     pinn.eval()
 
     # Create visualization dir if not exists
@@ -463,9 +644,12 @@ def main():
             Z_flat = np.ones_like(X_flat) * thickness
             E_flat = np.ones_like(X_flat) * E_val
             T_flat = np.ones_like(X_flat) * thickness
+            r_ref, mu_ref = _ref_param_values()
+            R_flat = np.ones_like(X_flat) * r_ref
+            MU_flat = np.ones_like(X_flat) * mu_ref
             
-            # Prepare input (N, 5)
-            input_pts = np.stack([X_flat, Y_flat, Z_flat, E_flat, T_flat], axis=1)
+            # Prepare input (N, 7)
+            input_pts = np.stack([X_flat, Y_flat, Z_flat, E_flat, T_flat, R_flat, MU_flat], axis=1)
             input_tensor = torch.tensor(input_pts, dtype=torch.float32).to(device)
             
             with torch.no_grad():
@@ -515,6 +699,8 @@ def main():
 
     # --- 3. E Sweep Verification ---
     verify_e_sweep(pinn, device, thickness_values, viz_dir, fea_refs=fea_refs)
+    # --- 4. Restitution/Friction Sweeps ---
+    verify_impact_param_sweeps(pinn, device, thickness_values, viz_dir, fea_refs=fea_refs)
 
 if __name__ == "__main__":
     main()
