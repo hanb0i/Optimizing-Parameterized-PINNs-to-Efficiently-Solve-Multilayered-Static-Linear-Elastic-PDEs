@@ -118,18 +118,22 @@ def compute_loss(model, data, device, weights=None):
     
     v_int = model(x_int, 0)
 
-    # Until explicit impact dynamics are modeled, restitution/friction should be neutral.
-    # Enforce output invariance by re-evaluating same spatial/E/t points at randomized
-    # restitution/friction values and penalizing output drift.
-    x_int_variant = x_int.clone()
-    r_min, r_max = getattr(config, "RESTITUTION_RANGE", (0.5, 0.5))
-    mu_min, mu_max = getattr(config, "FRICTION_RANGE", (0.3, 0.3))
-    if r_max > r_min:
-        x_int_variant[:, 5:6] = torch.rand_like(x_int_variant[:, 5:6]) * (r_max - r_min) + r_min
-    if mu_max > mu_min:
-        x_int_variant[:, 6:7] = torch.rand_like(x_int_variant[:, 6:7]) * (mu_max - mu_min) + mu_min
-    v_int_variant = model(x_int_variant, 0)
-    impact_invariance_loss = torch.mean((v_int - v_int_variant) ** 2)
+    if getattr(config, "ENFORCE_IMPACT_INVARIANCE", False):
+        # Neutral-parameter mode: keep restitution/friction effect suppressed.
+        x_int_variant = x_int.clone()
+        r_min, r_max = getattr(config, "RESTITUTION_RANGE", (0.5, 0.5))
+        mu_min, mu_max = getattr(config, "FRICTION_RANGE", (0.3, 0.3))
+        v0_min, v0_max = getattr(config, "IMPACT_VELOCITY_RANGE", (1.0, 1.0))
+        if r_max > r_min:
+            x_int_variant[:, 5:6] = torch.rand_like(x_int_variant[:, 5:6]) * (r_max - r_min) + r_min
+        if mu_max > mu_min:
+            x_int_variant[:, 6:7] = torch.rand_like(x_int_variant[:, 6:7]) * (mu_max - mu_min) + mu_min
+        if v0_max > v0_min:
+            x_int_variant[:, 7:8] = torch.rand_like(x_int_variant[:, 7:8]) * (v0_max - v0_min) + v0_min
+        v_int_variant = model(x_int_variant, 0)
+        impact_invariance_loss = torch.mean((v_int - v_int_variant) ** 2)
+    else:
+        impact_invariance_loss = torch.zeros((), device=x_int.device)
     losses['impact_invariance'] = impact_invariance_loss
     total_loss += weights.get('impact_invariance', 0.0) * impact_invariance_loss
 
@@ -182,6 +186,44 @@ def compute_loss(model, data, device, weights=None):
     
     mask = load_mask(x_top_load).unsqueeze(1)  # (N, 1)
     target_load = -config.p0 * mask
+    impact_contact_loss = torch.zeros((), device=x_top_load.device)
+    friction_coulomb_loss = torch.zeros((), device=x_top_load.device)
+    friction_stick_loss = torch.zeros((), device=x_top_load.device)
+    if getattr(config, "USE_EXPLICIT_IMPACT_PHYSICS", False):
+        # Restitution-aware normal traction:
+        # lower restitution -> stronger dissipative/impact contact response.
+        restitution_local = torch.clamp(x_top_load[:, 5:6], 0.0, 1.0)
+        impact_velocity_local = torch.clamp(x_top_load[:, 7:8], min=0.0)
+        thickness_local = torch.clamp(x_top_load[:, 4:5], min=1e-8)
+        compression = torch.relu(-u_top[:, 2:3]) / thickness_local
+        gain = float(getattr(config, "IMPACT_RESTITUTION_GAIN", 0.75))
+        v0_ref = float(getattr(config, "IMPACT_VELOCITY_REF", 1.0))
+        v_gain = float(getattr(config, "IMPACT_VELOCITY_GAIN", 0.20))
+        v_ratio = impact_velocity_local / max(v0_ref, 1e-8)
+        dynamic_scale = 1.0 + v_gain * (v_ratio ** 2)
+        restitution_scale = 1.0 + gain * (1.0 - restitution_local) * compression
+        target_load_contact = -config.p0 * mask * restitution_scale * dynamic_scale
+        impact_contact_loss = torch.mean((T[:, 2:3] - target_load_contact) ** 2)
+        losses['impact_contact'] = impact_contact_loss
+        total_loss += weights.get('impact_contact', 0.0) * impact_contact_loss
+
+        # Coulomb limit: ||T_t|| <= mu * |T_n| on loaded patch.
+        mu_local = torch.clamp(x_top_load[:, 6:7], min=0.0)
+        tangential_mag = torch.norm(T[:, :2], dim=1, keepdim=True)
+        normal_mag = torch.abs(T[:, 2:3])
+        friction_limit = mu_local * normal_mag
+        # Slightly stricter friction limit at larger impact velocity.
+        friction_limit = friction_limit / torch.sqrt(1.0 + v_gain * (v_ratio ** 2))
+        friction_violation = torch.relu(tangential_mag - friction_limit) * mask
+        friction_coulomb_loss = torch.mean(friction_violation ** 2)
+        losses['friction_coulomb'] = friction_coulomb_loss
+        total_loss += weights.get('friction_coulomb', 0.0) * friction_coulomb_loss
+
+        # Stick-style regularization: higher mu discourages tangential slip.
+        friction_stick_loss = torch.mean((mu_local * mask * u_top[:, :2]) ** 2)
+        losses['friction_stick'] = friction_stick_loss
+        total_loss += weights.get('friction_stick', 0.0) * friction_stick_loss
+
     target = torch.cat([
         torch.zeros_like(target_load),
         torch.zeros_like(target_load),

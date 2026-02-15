@@ -38,6 +38,13 @@ def _get_friction_range():
         mu_min, mu_max = 0.3, 0.3
     return float(mu_min), float(mu_max)
 
+def _get_impact_velocity_range():
+    if hasattr(config, "IMPACT_VELOCITY_RANGE"):
+        v0_min, v0_max = config.IMPACT_VELOCITY_RANGE
+    else:
+        v0_min, v0_max = 1.0, 1.0
+    return float(v0_min), float(v0_max)
+
 # Import FEM solver for generating supervision data
 import sys
 FEA_SOLVER_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "fea-workflow", "solver")
@@ -55,7 +62,7 @@ def load_fem_supervision_data(n_points_per_e=None, e_values=None, thickness_valu
         e_values: List of E values to sample (default: config.DATA_E_VALUES)
     
     Returns:
-        x_data: (N, 7) tensor of input points [x, y, z, E, thickness, restitution, friction]
+        x_data: (N, 8) tensor of input points [x, y, z, E, thickness, restitution, friction, v0]
         u_data: (N, 3) tensor of target displacements [ux, uy, uz]
     """
     import fem_solver
@@ -117,8 +124,10 @@ def load_fem_supervision_data(n_points_per_e=None, e_values=None, thickness_valu
             # Create input points with E and thickness values
             r_min, r_max = _get_restitution_range()
             mu_min, mu_max = _get_friction_range()
+            v0_min, v0_max = _get_impact_velocity_range()
             restitution = np.ones(len(indices)) * (0.5 * (r_min + r_max))
             friction = np.ones(len(indices)) * (0.5 * (mu_min + mu_max))
+            impact_velocity = np.ones(len(indices)) * (0.5 * (v0_min + v0_max))
 
             x_sampled = np.stack([
                 x_flat[indices],
@@ -127,7 +136,8 @@ def load_fem_supervision_data(n_points_per_e=None, e_values=None, thickness_valu
                 np.ones(len(indices)) * E_val,
                 np.ones(len(indices)) * thickness,
                 restitution,
-                friction
+                friction,
+                impact_velocity
             ], axis=1)
             
             u_sampled = u_flat[indices]
@@ -158,8 +168,10 @@ def sample_domain(n, z_min, z_max):
     restitution = torch.rand(n, 1) * (r_max - r_min) + r_min
     mu_min, mu_max = _get_friction_range()
     friction = torch.rand(n, 1) * (mu_max - mu_min) + mu_min
+    v0_min, v0_max = _get_impact_velocity_range()
+    impact_velocity = torch.rand(n, 1) * (v0_max - v0_min) + v0_min
 
-    return torch.cat([x, y, z, e, t, restitution, friction], dim=1)
+    return torch.cat([x, y, z, e, t, restitution, friction, impact_velocity], dim=1)
 
 def sample_domain_under_patch(n, z_min, z_max):
     """Sample interior points directly under the load patch."""
@@ -176,7 +188,9 @@ def sample_domain_under_patch(n, z_min, z_max):
     restitution = torch.rand(n, 1) * (r_max - r_min) + r_min
     mu_min, mu_max = _get_friction_range()
     friction = torch.rand(n, 1) * (mu_max - mu_min) + mu_min
-    return torch.cat([x, y, z, e, t, restitution, friction], dim=1)
+    v0_min, v0_max = _get_impact_velocity_range()
+    impact_velocity = torch.rand(n, 1) * (v0_max - v0_min) + v0_min
+    return torch.cat([x, y, z, e, t, restitution, friction, impact_velocity], dim=1)
 
 def sample_domain_residual_based(n, z_min, z_max, prev_pts, prev_residuals):
     """Sample points weighted by residual magnitude."""
@@ -201,13 +215,15 @@ def sample_domain_residual_based(n, z_min, z_max, prev_pts, prev_residuals):
     t_min, t_max = _get_thickness_range()
     r_min, r_max = _get_restitution_range()
     mu_min, mu_max = _get_friction_range()
+    v0_min, v0_max = _get_impact_velocity_range()
     noise_z = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * (t_max - t_min)
     noise_e = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * (e_max - e_min)
     noise_t = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * (t_max - t_min)
     noise_r = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * (r_max - r_min)
     noise_mu = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * (mu_max - mu_min)
+    noise_v0 = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * (v0_max - v0_min)
 
-    noise = torch.cat([noise_x, noise_y, noise_z, noise_e, noise_t, noise_r, noise_mu], dim=1)
+    noise = torch.cat([noise_x, noise_y, noise_z, noise_e, noise_t, noise_r, noise_mu, noise_v0], dim=1)
     
     new_pts = sampled_pts + noise
     
@@ -218,6 +234,7 @@ def sample_domain_residual_based(n, z_min, z_max, prev_pts, prev_residuals):
     new_pts[:, 4] = torch.clamp(new_pts[:, 4], t_min, t_max)
     new_pts[:, 5] = torch.clamp(new_pts[:, 5], r_min, r_max)
     new_pts[:, 6] = torch.clamp(new_pts[:, 6], mu_min, mu_max)
+    new_pts[:, 7] = torch.clamp(new_pts[:, 7], v0_min, v0_max)
     new_pts[:, 2] = torch.maximum(new_pts[:, 2], torch.zeros_like(new_pts[:, 2]))
     new_pts[:, 2] = torch.minimum(new_pts[:, 2], new_pts[:, 4])
     
@@ -232,6 +249,7 @@ def sample_boundaries(n, z_min, z_max):
     t_min, t_max = _get_thickness_range()
     r_min, r_max = _get_restitution_range()
     mu_min, mu_max = _get_friction_range()
+    v0_min, v0_max = _get_impact_velocity_range()
     # x=0
     y1 = torch.rand(n_face, 1) * config.Ly
     t1 = torch.rand(n_face, 1) * (t_max - t_min) + t_min
@@ -240,7 +258,8 @@ def sample_boundaries(n, z_min, z_max):
     e1 = torch.rand(n_face, 1) * (e_max - e_min) + e_min
     r1 = torch.rand(n_face, 1) * (r_max - r_min) + r_min
     mu1 = torch.rand(n_face, 1) * (mu_max - mu_min) + mu_min
-    p1 = torch.cat([x1, y1, z1, e1, t1, r1, mu1], dim=1)
+    v01 = torch.rand(n_face, 1) * (v0_max - v0_min) + v0_min
+    p1 = torch.cat([x1, y1, z1, e1, t1, r1, mu1, v01], dim=1)
     
     # x=Lx
     y2 = torch.rand(n_face, 1) * config.Ly
@@ -250,7 +269,8 @@ def sample_boundaries(n, z_min, z_max):
     e2 = torch.rand(n_face, 1) * (e_max - e_min) + e_min
     r2 = torch.rand(n_face, 1) * (r_max - r_min) + r_min
     mu2 = torch.rand(n_face, 1) * (mu_max - mu_min) + mu_min
-    p2 = torch.cat([x2, y2, z2, e2, t2, r2, mu2], dim=1)
+    v02 = torch.rand(n_face, 1) * (v0_max - v0_min) + v0_min
+    p2 = torch.cat([x2, y2, z2, e2, t2, r2, mu2, v02], dim=1)
     
     # y=0
     x3 = torch.rand(n_face, 1) * config.Lx
@@ -260,7 +280,8 @@ def sample_boundaries(n, z_min, z_max):
     e3 = torch.rand(n_face, 1) * (e_max - e_min) + e_min
     r3 = torch.rand(n_face, 1) * (r_max - r_min) + r_min
     mu3 = torch.rand(n_face, 1) * (mu_max - mu_min) + mu_min
-    p3 = torch.cat([x3, y3, z3, e3, t3, r3, mu3], dim=1)
+    v03 = torch.rand(n_face, 1) * (v0_max - v0_min) + v0_min
+    p3 = torch.cat([x3, y3, z3, e3, t3, r3, mu3, v03], dim=1)
     
     # y=Ly
     x4 = torch.rand(n_face, 1) * config.Lx
@@ -270,7 +291,8 @@ def sample_boundaries(n, z_min, z_max):
     e4 = torch.rand(n_face, 1) * (e_max - e_min) + e_min
     r4 = torch.rand(n_face, 1) * (r_max - r_min) + r_min
     mu4 = torch.rand(n_face, 1) * (mu_max - mu_min) + mu_min
-    p4 = torch.cat([x4, y4, z4, e4, t4, r4, mu4], dim=1)
+    v04 = torch.rand(n_face, 1) * (v0_max - v0_min) + v0_min
+    p4 = torch.cat([x4, y4, z4, e4, t4, r4, mu4, v04], dim=1)
     
     return torch.cat([p1, p2, p3, p4], dim=0)
 
@@ -295,6 +317,7 @@ def sample_boundaries_residual_based(n, z_min, z_max, prev_pts, prev_residuals):
     t_min, t_max = _get_thickness_range()
     r_min, r_max = _get_restitution_range()
     mu_min, mu_max = _get_friction_range()
+    v0_min, v0_max = _get_impact_velocity_range()
     noise_e = (torch.rand(n) - 0.5) * 2 * noise_scale * (e_max - e_min)
     new_pts[:, 3] += noise_e
     noise_t = (torch.rand(n) - 0.5) * 2 * noise_scale * (t_max - t_min)
@@ -303,6 +326,8 @@ def sample_boundaries_residual_based(n, z_min, z_max, prev_pts, prev_residuals):
     new_pts[:, 5] += noise_r
     noise_mu = (torch.rand(n) - 0.5) * 2 * noise_scale * (mu_max - mu_min)
     new_pts[:, 6] += noise_mu
+    noise_v0 = (torch.rand(n) - 0.5) * 2 * noise_scale * (v0_max - v0_min)
+    new_pts[:, 7] += noise_v0
     
     # For each face, perturb only the non-fixed coordinates
     for i in range(n):
@@ -332,6 +357,7 @@ def sample_boundaries_residual_based(n, z_min, z_max, prev_pts, prev_residuals):
     new_pts[:, 4] = torch.clamp(new_pts[:, 4], t_min, t_max)
     new_pts[:, 5] = torch.clamp(new_pts[:, 5], r_min, r_max)
     new_pts[:, 6] = torch.clamp(new_pts[:, 6], mu_min, mu_max)
+    new_pts[:, 7] = torch.clamp(new_pts[:, 7], v0_min, v0_max)
     new_pts[:, 2] = torch.maximum(new_pts[:, 2], torch.zeros_like(new_pts[:, 2]))
     new_pts[:, 2] = torch.minimum(new_pts[:, 2], new_pts[:, 4])
     
@@ -351,7 +377,9 @@ def sample_top_load(n):
     rl = torch.rand(n, 1) * (r_max - r_min) + r_min
     mu_min, mu_max = _get_friction_range()
     mul = torch.rand(n, 1) * (mu_max - mu_min) + mu_min
-    return torch.cat([xl, yl, zl, el, tl, rl, mul], dim=1)
+    v0_min, v0_max = _get_impact_velocity_range()
+    v0l = torch.rand(n, 1) * (v0_max - v0_min) + v0_min
+    return torch.cat([xl, yl, zl, el, tl, rl, mul, v0l], dim=1)
 
 def sample_top_free(n):
     """Sample points on free top surface (outside load patch)."""
@@ -378,7 +406,9 @@ def sample_top_free(n):
             rf = torch.rand(len(xf), 1) * (r_max - r_min) + r_min
             mu_min, mu_max = _get_friction_range()
             muf = torch.rand(len(xf), 1) * (mu_max - mu_min) + mu_min
-            batch_pts = torch.cat([xf, yf, zf, ef, tf, rf, muf], dim=1)
+            v0_min, v0_max = _get_impact_velocity_range()
+            v0f = torch.rand(len(xf), 1) * (v0_max - v0_min) + v0_min
+            batch_pts = torch.cat([xf, yf, zf, ef, tf, rf, muf, v0f], dim=1)
             pts_free_list.append(batch_pts)
             count += len(xf)
     
@@ -409,7 +439,9 @@ def sample_surface_residual_based(n, z_val, prev_pts, prev_residuals, constrain_
             r = torch.rand(n, 1) * (r_max - r_min) + r_min
             mu_min, mu_max = _get_friction_range()
             mu = torch.rand(n, 1) * (mu_max - mu_min) + mu_min
-            return torch.cat([x, y, z, e, t, r, mu], dim=1)
+            v0_min, v0_max = _get_impact_velocity_range()
+            v0 = torch.rand(n, 1) * (v0_max - v0_min) + v0_min
+            return torch.cat([x, y, z, e, t, r, mu, v0], dim=1)
     
     residual_probs = prev_residuals / prev_residuals.sum()
     residual_probs = residual_probs + 1e-10
@@ -424,11 +456,13 @@ def sample_surface_residual_based(n, z_val, prev_pts, prev_residuals, constrain_
     t_min, t_max = _get_thickness_range()
     r_min, r_max = _get_restitution_range()
     mu_min, mu_max = _get_friction_range()
+    v0_min, v0_max = _get_impact_velocity_range()
     noise_e = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * (e_max - e_min)
     noise_t = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * (t_max - t_min)
     noise_r = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * (r_max - r_min)
     noise_mu = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * (mu_max - mu_min)
-    noise = torch.cat([noise_x, noise_y, torch.zeros(n, 1), noise_e, noise_t, noise_r, noise_mu], dim=1)
+    noise_v0 = (torch.rand(n, 1) - 0.5) * 2 * noise_scale * (v0_max - v0_min)
+    noise = torch.cat([noise_x, noise_y, torch.zeros(n, 1), noise_e, noise_t, noise_r, noise_mu, noise_v0], dim=1)
     
     new_pts = sampled_pts + noise
     new_pts[:, 4] = torch.clamp(new_pts[:, 4], t_min, t_max)
@@ -443,6 +477,7 @@ def sample_surface_residual_based(n, z_val, prev_pts, prev_residuals, constrain_
     new_pts[:, 3] = torch.clamp(new_pts[:, 3], e_min, e_max)
     new_pts[:, 5] = torch.clamp(new_pts[:, 5], r_min, r_max)
     new_pts[:, 6] = torch.clamp(new_pts[:, 6], mu_min, mu_max)
+    new_pts[:, 7] = torch.clamp(new_pts[:, 7], v0_min, v0_max)
     
     # If constrained to load patch or free region
     if constrain_load_patch:
@@ -497,7 +532,9 @@ def sample_interface(n, z_val):
     r = torch.rand(n, 1) * (r_max - r_min) + r_min
     mu_min, mu_max = _get_friction_range()
     mu = torch.rand(n, 1) * (mu_max - mu_min) + mu_min
-    return torch.cat([x, y, z, e, t, r, mu], dim=1)
+    v0_min, v0_max = _get_impact_velocity_range()
+    v0 = torch.rand(n, 1) * (v0_max - v0_min) + v0_min
+    return torch.cat([x, y, z, e, t, r, mu, v0], dim=1)
 
 def sample_bottom(n):
     """Sample points on bottom surface (z=0)."""
@@ -512,7 +549,9 @@ def sample_bottom(n):
     r_bot = torch.rand(n, 1) * (r_max - r_min) + r_min
     mu_min, mu_max = _get_friction_range()
     mu_bot = torch.rand(n, 1) * (mu_max - mu_min) + mu_min
-    return torch.cat([x_bot, y_bot, z_bot, e_bot, t_bot, r_bot, mu_bot], dim=1)
+    v0_min, v0_max = _get_impact_velocity_range()
+    v0_bot = torch.rand(n, 1) * (v0_max - v0_min) + v0_min
+    return torch.cat([x_bot, y_bot, z_bot, e_bot, t_bot, r_bot, mu_bot, v0_bot], dim=1)
 
 def get_data(prev_data=None, residuals=None):
     """Generate collocation points with optional residual-based sampling.

@@ -20,13 +20,19 @@ def _load_compatible_state_dict(pinn, ckpt_path, device):
         src_w = sd[w_key]
         tgt_w = target_sd[w_key]
         if src_w.shape != tgt_w.shape and src_w.shape[0] == tgt_w.shape[0]:
-            # Old parametric model: [x,y,z,E,t,inv1,inv2,inv3] -> new adds [r,mu]
-            if src_w.shape[1] == 8 and tgt_w.shape[1] == 10:
+            # Old parametric model: [x,y,z,E,t,inv1,inv2,inv3]
+            if src_w.shape[1] == 8 and tgt_w.shape[1] == 11:
                 adapted = torch.zeros_like(tgt_w)
                 adapted[:, 0:5] = src_w[:, 0:5]
-                adapted[:, 7:10] = src_w[:, 5:8]
+                adapted[:, 8:11] = src_w[:, 5:8]
                 sd[w_key] = adapted
-                print("Adapted first-layer weights from 8->10 inputs (inserted neutral r/mu channels).")
+                print("Adapted first-layer weights from 8->11 inputs (inserted neutral r/mu/v0 channels).")
+            elif src_w.shape[1] == 10 and tgt_w.shape[1] == 11:
+                adapted = torch.zeros_like(tgt_w)
+                adapted[:, 0:7] = src_w[:, 0:7]
+                adapted[:, 8:11] = src_w[:, 7:10]
+                sd[w_key] = adapted
+                print("Adapted first-layer weights from 10->11 inputs (inserted neutral v0 channel).")
     missing, unexpected = pinn.load_state_dict(sd, strict=False)
     print(f"Warm-start loaded from {ckpt_path}")
     if missing:
@@ -105,9 +111,11 @@ def train():
         t_ones = np.ones((pts_fea.shape[0], 1)) * config.H
         r_ref = float(getattr(config, "RESTITUTION_REF", 0.5))
         mu_ref = float(getattr(config, "FRICTION_REF", 0.3))
+        v0_ref = float(getattr(config, "IMPACT_VELOCITY_REF", 1.0))
         r_ones = np.ones((pts_fea.shape[0], 1)) * r_ref
         mu_ones = np.ones((pts_fea.shape[0], 1)) * mu_ref
-        pts_fea = np.hstack([pts_fea, e_ones, t_ones, r_ones, mu_ones])
+        v0_ones = np.ones((pts_fea.shape[0], 1)) * v0_ref
+        pts_fea = np.hstack([pts_fea, e_ones, t_ones, r_ones, mu_ones, v0_ones])
         pts_fea_tensor = torch.tensor(pts_fea, dtype=torch.float32).to(device)
         u_fea_flat = U_fea.reshape(-1, 3)
         
@@ -140,6 +148,9 @@ def train():
         'load': [],
         'energy': [],
         'impact_invariance': [],
+        'impact_contact': [],
+        'friction_coulomb': [],
+        'friction_stick': [],
         'fem_mae': [],
         'fem_max_err': [],
         'epochs': []
@@ -154,6 +165,9 @@ def train():
         'load': [],
         'energy': [],
         'impact_invariance': [],
+        'impact_contact': [],
+        'friction_coulomb': [],
+        'friction_stick': [],
         'fem_mae': [],
         'fem_max_err': [],
         'steps': []
@@ -196,6 +210,9 @@ def train():
         adam_history['load'].append(losses['load'].item())
         adam_history['energy'].append(losses['energy'].item())
         adam_history['impact_invariance'].append(losses.get('impact_invariance', torch.tensor(0.0)).item())
+        adam_history['impact_contact'].append(losses.get('impact_contact', torch.tensor(0.0)).item())
+        adam_history['friction_coulomb'].append(losses.get('friction_coulomb', torch.tensor(0.0)).item())
+        adam_history['friction_stick'].append(losses.get('friction_stick', torch.tensor(0.0)).item())
         
         if epoch % 100 == 0:
             current_time = time.time()
@@ -229,6 +246,9 @@ def train():
                       f"PDE: {losses['pde']:.6f} | BC_sides: {losses['bc_sides']:.6f} | "
                       f"Free_top: {losses['free_top']:.6f} | Free_bot: {losses['free_bot']:.6f} | "
                       f"Load: {losses['load']:.6f} | Energy: {losses['energy']:.6f} | "
+                      f"ImpactC: {losses.get('impact_contact', torch.tensor(0.0)).item():.6f} | "
+                      f"FricC: {losses.get('friction_coulomb', torch.tensor(0.0)).item():.6f} | "
+                      f"FricS: {losses.get('friction_stick', torch.tensor(0.0)).item():.6f} | "
                       f"ImpactInv: {losses.get('impact_invariance', torch.tensor(0.0)).item():.6f} | "
                       f"LR: {current_lr:.2e} | "
                       f"FEM MAE: {mae:.6f} | Time: {step_duration:.4f}s")
@@ -237,6 +257,9 @@ def train():
                       f"PDE: {losses['pde']:.6f} | BC_sides: {losses['bc_sides']:.6f} | "
                       f"Free_top: {losses['free_top']:.6f} | Free_bot: {losses['free_bot']:.6f} | "
                       f"Load: {losses['load']:.6f} | Energy: {losses['energy']:.6f} | "
+                      f"ImpactC: {losses.get('impact_contact', torch.tensor(0.0)).item():.6f} | "
+                      f"FricC: {losses.get('friction_coulomb', torch.tensor(0.0)).item():.6f} | "
+                      f"FricS: {losses.get('friction_stick', torch.tensor(0.0)).item():.6f} | "
                       f"ImpactInv: {losses.get('impact_invariance', torch.tensor(0.0)).item():.6f} | "
                       f"LR: {current_lr:.2e} | Time: {step_duration:.4f}s")
             
@@ -280,6 +303,9 @@ def train():
         lbfgs_history['load'].append(losses['load'].item())
         lbfgs_history['energy'].append(losses['energy'].item())
         lbfgs_history['impact_invariance'].append(losses.get('impact_invariance', torch.tensor(0.0)).item())
+        lbfgs_history['impact_contact'].append(losses.get('impact_contact', torch.tensor(0.0)).item())
+        lbfgs_history['friction_coulomb'].append(losses.get('friction_coulomb', torch.tensor(0.0)).item())
+        lbfgs_history['friction_stick'].append(losses.get('friction_stick', torch.tensor(0.0)).item())
         
         # Compute FEM error and print
         if fem_available:
@@ -305,6 +331,9 @@ def train():
                   f"BC_sides: {losses['bc_sides'].item():.6e} | Free_top: {losses['free_top'].item():.6e} | "
                   f"Free_bot: {losses['free_bot'].item():.6e} | Load: {losses['load'].item():.6e} | "
                   f"Energy: {losses['energy'].item():.6e} | "
+                  f"ImpactC: {losses.get('impact_contact', torch.tensor(0.0)).item():.6e} | "
+                  f"FricC: {losses.get('friction_coulomb', torch.tensor(0.0)).item():.6e} | "
+                  f"FricS: {losses.get('friction_stick', torch.tensor(0.0)).item():.6e} | "
                   f"ImpactInv: {losses.get('impact_invariance', torch.tensor(0.0)).item():.6e} | "
                   f"FEM MAE: {mae:.6e} | Time: {step_end - step_start:.4f}s")
         else:
@@ -312,6 +341,9 @@ def train():
                   f"BC_sides: {losses['bc_sides'].item():.6e} | Free_top: {losses['free_top'].item():.6e} | "
                   f"Free_bot: {losses['free_bot'].item():.6e} | Load: {losses['load'].item():.6e} | "
                   f"Energy: {losses['energy'].item():.6e} | "
+                  f"ImpactC: {losses.get('impact_contact', torch.tensor(0.0)).item():.6e} | "
+                  f"FricC: {losses.get('friction_coulomb', torch.tensor(0.0)).item():.6e} | "
+                  f"FricS: {losses.get('friction_stick', torch.tensor(0.0)).item():.6e} | "
                   f"ImpactInv: {losses.get('impact_invariance', torch.tensor(0.0)).item():.6e} | "
                   f"Time: {step_end - step_start:.4f}s")
         

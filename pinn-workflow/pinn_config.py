@@ -19,7 +19,8 @@ E_RANGE = [1.0, 10.0]
 THICKNESS_RANGE = [0.05, 0.15]
 RESTITUTION_RANGE = [0.1, 0.9]
 FRICTION_RANGE = [0.0, 0.6]
-PARAM_DIM = 4
+IMPACT_VELOCITY_RANGE = [0.2, 2.0]
+PARAM_DIM = 5
 
 # Optional: explicit E sweep values for `verify_parametric_pinn.py`.
 # If not set, it uses `np.linspace(E_RANGE[0], E_RANGE[1], PINN_VERIFY_E_STEPS)`.
@@ -27,15 +28,17 @@ PARAM_DIM = 4
 # Optional: explicit restitution/friction sweep values for verification.
 # VERIFY_RESTITUTION_SWEEP_VALUES = np.linspace(RESTITUTION_RANGE[0], RESTITUTION_RANGE[1], 7).tolist()
 # VERIFY_FRICTION_SWEEP_VALUES = np.linspace(FRICTION_RANGE[0], FRICTION_RANGE[1], 7).tolist()
+# VERIFY_IMPACT_VELOCITY_SWEEP_VALUES = np.linspace(IMPACT_VELOCITY_RANGE[0], IMPACT_VELOCITY_RANGE[1], 7).tolist()
 
 # Reference parameter values for parity with baseline FEA (which has no restitution/friction).
 RESTITUTION_REF = 0.5
 FRICTION_REF = 0.3
+IMPACT_VELOCITY_REF = 1.0
 
 # Inference-time compliance correction for E:
 # Use u = v / E^p instead of v / E (p=1.0). This can help slightly reduce
 # high-E under/over-shoot without retraining.
-E_COMPLIANCE_POWER = 1.06
+E_COMPLIANCE_POWER = 1.085
 
 # --- Parametric compliance scaling ---
 # Many plate-like problems scale strongly with thickness (often ~ 1/t^3).
@@ -43,7 +46,7 @@ E_COMPLIANCE_POWER = 1.06
 #   u = (v / E) * (H / t)^alpha
 # where H is the baseline thickness (config.H) and t is the sampled thickness.
 # Set alpha=0.0 to disable.
-THICKNESS_COMPLIANCE_ALPHA = 2.7
+THICKNESS_COMPLIANCE_ALPHA = 2.325
 
 def get_lame_params(E, nu):
     lm = (E * nu) / ((1 + nu) * (1 - 2 * nu))
@@ -74,8 +77,8 @@ NEURONS = 64
 
 # --- Training Hyperparameters ---
 LEARNING_RATE = 1e-3
-EPOCHS_ADAM = 2000 # Increased to enforce load and reduce underfit
-EPOCHS_LBFGS = 300 # Increased to 300 per user request (fast training)
+EPOCHS_ADAM = 180
+EPOCHS_LBFGS = 0
 # SOAP optimizer
 SOAP_PRECONDITION_FREQUENCY = 10 # Lower = more frequent curvature updates; higher = cheaper but less responsive
 #Plot Physical Residuals Every N Epochs every 100 epochs. 
@@ -84,9 +87,12 @@ WEIGHTS = {
     'bc': 0.7,      # Slightly softer sides so load can gather more budget
     'load': 5.0, # Optimal load weight
     'energy': 0.63, # Per user request
-    'impact_invariance': 0.5,  # Keep restitution/friction neutral until explicit impact physics is added
+    'impact_invariance': 0.0,  # Set >0 only for neutral-parameter mode
+    'impact_contact': 0.0002,   # Reduced to preserve FEA parity in no-supervision mode
+    'friction_coulomb': 0.001,  # Reduced to preserve FEA parity in no-supervision mode
+    'friction_stick': 0.0005,   # Reduced to preserve FEA parity in no-supervision mode
     'interface_u': 1.0,
-    'data': 0.0   # Enabled (Golden Rule)
+    'data': 0.0
 }
 
 # Loss weight ramp: load-first to raise displacement while preserving shape.
@@ -121,3 +127,13 @@ FOURIER_SCALE = 1.0 # Standard deviation for frequency sampling
 N_DATA_POINTS = 5000  # Increased for dense coverage
 DATA_E_VALUES = np.linspace(1.0, 10.0, 10).tolist() # [1.0, 2.0, ..., 10.0]
 USE_SUPERVISION_DATA = False
+
+# --- Explicit impact/friction physics controls ---
+# When enabled, restitution/friction influence boundary losses directly.
+USE_EXPLICIT_IMPACT_PHYSICS = True
+# If True, keeps restitution/friction neutral (used before explicit physics).
+ENFORCE_IMPACT_INVARIANCE = False
+# Restitution-coupled load amplification gain.
+IMPACT_RESTITUTION_GAIN = 0.03
+# Impact-velocity gain for dynamic traction amplification.
+IMPACT_VELOCITY_GAIN = 0.03

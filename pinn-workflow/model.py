@@ -21,13 +21,13 @@ class LayerNet(nn.Module):
                  fourier_dim=0, fourier_scale=1.0):
         super().__init__()
         layers = []
-        # Input: x, y, z (and E, thickness, restitution, friction as extra channels)
+        # Input: x, y, z (and E, thickness, restitution, friction, v0 as extra channels)
         self.fourier = FourierFeatures(3, fourier_dim, fourier_scale) if fourier_dim > 0 else None
         
         # Base input dimension
-        # If fourier: [sin(..), cos(..)] (size 2*fourier_dim) + 4 normalized params
-        # Else: x, y, z_hat + 4 normalized params (size 7)
-        base_dim = (2 * fourier_dim + 4) if fourier_dim > 0 else 7
+        # If fourier: [sin(..), cos(..)] (size 2*fourier_dim) + 5 normalized params
+        # Else: x, y, z_hat + 5 normalized params (size 8)
+        base_dim = (2 * fourier_dim + 5) if fourier_dim > 0 else 8
         
         # We add 3 extra physics-informed features: (H/t), (H/t)^2, (H/t)^3
         # These help the network resolve the 1/t^3 scaling naturally from the PDE data.
@@ -55,7 +55,7 @@ class LayerNet(nn.Module):
                 nn.init.constant_(m.bias, 0)
                 
     def forward(self, x):
-        # x shape: (N, 7) -> [x, y, z, E, thickness, restitution, friction]
+        # x shape: (N, 8) -> [x, y, z, E, thickness, restitution, friction, v0]
         
         # Use torch.cat to preserve gradient flow
         # x_scaled = [x, y, z*10, E_norm]
@@ -67,6 +67,7 @@ class LayerNet(nn.Module):
         t_param = x[:, 4:5]
         r_param = x[:, 5:6]
         mu_param = x[:, 6:7]
+        v0_param = x[:, 7:8]
         
         e_min, e_max = config.E_RANGE
         e_span = (e_max - e_min) if (e_max - e_min) != 0 else 1.0
@@ -83,6 +84,10 @@ class LayerNet(nn.Module):
         mu_min, mu_max = config.FRICTION_RANGE
         mu_span = (mu_max - mu_min) if (mu_max - mu_min) != 0 else 1.0
         mu_norm = (mu_param - mu_min) / mu_span
+
+        v0_min, v0_max = config.IMPACT_VELOCITY_RANGE
+        v0_span = (v0_max - v0_min) if (v0_max - v0_min) != 0 else 1.0
+        v0_norm = (v0_param - v0_min) / v0_span
 
         t_safe = torch.clamp(t_param, min=1e-6)
         z_hat = z_coord / t_safe
@@ -106,9 +111,9 @@ class LayerNet(nn.Module):
         if self.fourier is not None:
             xyz = torch.cat([x_coord, y_coord, z_hat], dim=1)
             ff = self.fourier(xyz)
-            x_scaled = torch.cat([ff, e_norm, t_norm, r_norm, mu_norm, extra_feats], dim=1)
+            x_scaled = torch.cat([ff, e_norm, t_norm, r_norm, mu_norm, v0_norm, extra_feats], dim=1)
         else:
-            x_scaled = torch.cat([x_coord, y_coord, z_hat, e_norm, t_norm, r_norm, mu_norm, extra_feats], dim=1)
+            x_scaled = torch.cat([x_coord, y_coord, z_hat, e_norm, t_norm, r_norm, mu_norm, v0_norm, extra_feats], dim=1)
         
         u_raw = self.net(x_scaled)
         
@@ -138,7 +143,7 @@ class MultiLayerPINN(nn.Module):
         )
         
     def forward(self, x, layer_idx=0):
-        # x: (N, 7) -> [x, y, z, E, thickness, restitution, friction]
+        # x: (N, 8) -> [x, y, z, E, thickness, restitution, friction, v0]
         
         # 1. Compute the normalized potential/shape 'v'
         v = self.layer(x)
