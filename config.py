@@ -56,6 +56,7 @@ class SurrogateConfig:
     val_frac: float = 0.15
 
     output_weights: Optional[torch.Tensor] = None
+    include_bounds_anchors: bool = True
 
 
 @dataclass(frozen=True)
@@ -87,9 +88,11 @@ class DamageConfig:
 @dataclass(frozen=True)
 class ActiveLearningConfig:
     enabled: bool = True
-    iters: int = 2
-    discrepancy_tol: float = 0.25
-    add_points_per_iter: int = 5
+    iters: int = 5
+    discrepancy_tol: float = 0.05
+    add_points_per_iter: int = 20
+    eval_random_points: int = 10
+    relerr_floor: float = 1e-6
 
 
 @dataclass(frozen=True)
@@ -105,4 +108,3 @@ class PipelineConfig:
     active_learning: ActiveLearningConfig = ActiveLearningConfig()
 
     dataset_size: int = 256
-

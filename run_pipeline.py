@@ -11,8 +11,8 @@ from typing import Any, Dict, Mapping, Union
 import torch
 
 from config import Bounds, PipelineConfig
-from dataset import generate_dataset
-from evaluate import compare_designs, run_repeated_impacts, active_learning_refine
+from dataset import generate_dataset, mu_tensor_to_dict, sample_mu
+from evaluate import compare_designs, run_repeated_impacts, active_learning_refine, discrepancy_report
 from metrics import MetricsConfig
 from optimize import optimize_design
 from surrogate import train_surrogate
@@ -93,17 +93,38 @@ def main() -> None:
     surrogate, hist, fit_metrics = train_surrogate(dataset, bounds, cfg)
 
     mu0 = {k: (bounds_dict[k][0] + bounds_dict[k][1]) * 0.5 for k in bounds.names}
-    candidates, traj = optimize_design(surrogate, bounds, cfg)
+    candidates, _ = optimize_design(surrogate, bounds, cfg)
 
+    if cfg.active_learning.enabled:
+        for it in range(int(cfg.active_learning.iters)):
+            candidates, _ = optimize_design(surrogate, bounds, cfg)
+            eval_mus = list(candidates)
+            n_rand = int(cfg.active_learning.eval_random_points)
+            if n_rand > 0:
+                x_rand = sample_mu(n_rand, bounds, seed=int(cfg.surrogate.seed + 1000 + it)).cpu()
+                eval_mus.extend([mu_tensor_to_dict(x_rand[i], list(bounds.names)) for i in range(x_rand.shape[0])])
+
+            rep = discrepancy_report(
+                surrogate,
+                eval_mus,
+                dummy_physics_runner,
+                cfg.metrics,
+                relerr_floor=float(cfg.active_learning.relerr_floor),
+            )
+            print(f"Surrogate discrepancy iter {it}: max_rel={rep['max_rel']:.4f}, mean_rel={rep['mean_rel']:.4f}")
+            print(f"  per_target_max_rel={rep['per_target_max_rel']}")
+            if rep["max_rel"] <= float(cfg.active_learning.discrepancy_tol):
+                break
+            refined = active_learning_refine(cfg.dataset_size, bounds, dummy_physics_runner, cfg, candidates, surrogate)
+            if refined is None:
+                break
+            surrogate = refined
+
+    candidates, _ = optimize_design(surrogate, bounds, cfg)
     table = compare_designs(mu0, candidates, dummy_physics_runner, cfg.metrics)
     print("Validation vs baseline (true physics):")
     for row in table:
         print(row)
-
-    refined = active_learning_refine(cfg.dataset_size, bounds, dummy_physics_runner, cfg, candidates, surrogate)
-    if refined is not None:
-        print("Active-learning refinement: retrained surrogate on added discrepancy points.")
-        surrogate = refined
 
     if cfg.damage.enabled:
         print("Repeated impacts with damage:")
@@ -119,4 +140,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

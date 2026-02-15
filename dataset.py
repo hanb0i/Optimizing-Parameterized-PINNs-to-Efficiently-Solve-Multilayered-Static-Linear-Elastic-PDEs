@@ -79,6 +79,67 @@ def split_indices(n: int, train_frac: float, val_frac: float, *, seed: int = 0, 
     return train_idx, val_idx, test_idx
 
 
+def build_supervised_dataset(
+    *,
+    param_names: List[str],
+    target_names: List[str],
+    x_raw: torch.Tensor,
+    y_raw: torch.Tensor,
+    train_frac: float,
+    val_frac: float,
+    seed: int,
+) -> SupervisedDataset:
+    x_raw = x_raw.detach().cpu()
+    y_raw = y_raw.detach().cpu()
+
+    x_min = x_raw.min(dim=0).values
+    x_max = x_raw.max(dim=0).values
+    y_min = y_raw.min(dim=0).values
+    y_max = y_raw.max(dim=0).values
+
+    train_idx, val_idx, test_idx = split_indices(
+        int(x_raw.shape[0]),
+        float(train_frac),
+        float(val_frac),
+        seed=int(seed),
+        device=torch.device("cpu"),
+    )
+
+    return SupervisedDataset(
+        param_names=list(param_names),
+        target_names=list(target_names),
+        x_raw=x_raw,
+        y_raw=y_raw,
+        x_min=x_min,
+        x_max=x_max,
+        y_min=y_min,
+        y_max=y_max,
+        train_idx=train_idx,
+        val_idx=val_idx,
+        test_idx=test_idx,
+    )
+
+
+def bounds_anchor_points(bounds: Bounds) -> torch.Tensor:
+    """
+    Anchor points that guarantee x_min/x_max match bounds for normalization stability.
+
+    Returns shape [2*dim, dim] where each point sets one parameter to low/high and
+    others to mid.
+    """
+
+    mid = 0.5 * (bounds.low + bounds.high)
+    pts = []
+    for j in range(bounds.dim):
+        lo = mid.clone()
+        hi = mid.clone()
+        lo[j] = bounds.low[j]
+        hi[j] = bounds.high[j]
+        pts.append(lo)
+        pts.append(hi)
+    return torch.stack(pts, dim=0)
+
+
 def generate_dataset(
     n: int,
     bounds: Bounds,
@@ -100,33 +161,23 @@ def generate_dataset(
     target_names = target_names or ["y_strain_energy", "y_accel_peak", "y_disp_peak"]
 
     x_raw = sample_mu(n, bounds, seed=seed).to(cfg.device)
+    if cfg.surrogate.include_bounds_anchors:
+        x_raw = torch.cat([x_raw, bounds_anchor_points(bounds).to(cfg.device)], dim=0)
     y_rows: List[torch.Tensor] = []
 
-    for i in range(n):
+    for i in range(int(x_raw.shape[0])):
         mu_i = x_raw[i]
         sim_out = physics_runner(mu_i)
         metrics = compute_metrics(sim_out, cfg.metrics)
         y_rows.append(torch.stack([metrics[name].to(cfg.device) for name in target_names], dim=0))
 
     y_raw = torch.stack(y_rows, dim=0)
-
-    x_min = x_raw.min(dim=0).values
-    x_max = x_raw.max(dim=0).values
-    y_min = y_raw.min(dim=0).values
-    y_max = y_raw.max(dim=0).values
-
-    train_idx, val_idx, test_idx = split_indices(n, cfg.surrogate.train_frac, cfg.surrogate.val_frac, seed=seed, device=torch.device("cpu"))
-    return SupervisedDataset(
+    return build_supervised_dataset(
         param_names=list(bounds.names),
         target_names=target_names,
-        x_raw=x_raw.detach().cpu(),
-        y_raw=y_raw.detach().cpu(),
-        x_min=x_min.detach().cpu(),
-        x_max=x_max.detach().cpu(),
-        y_min=y_min.detach().cpu(),
-        y_max=y_max.detach().cpu(),
-        train_idx=train_idx.detach().cpu(),
-        val_idx=val_idx.detach().cpu(),
-        test_idx=test_idx.detach().cpu(),
+        x_raw=x_raw,
+        y_raw=y_raw,
+        train_frac=cfg.surrogate.train_frac,
+        val_frac=cfg.surrogate.val_frac,
+        seed=int(seed),
     )
-

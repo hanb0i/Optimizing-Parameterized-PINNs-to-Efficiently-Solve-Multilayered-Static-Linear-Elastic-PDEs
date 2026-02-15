@@ -105,9 +105,16 @@ def optimize_design(
 
         top_steps.extend(sorted(all_traj[-int(ocfg.steps):], key=lambda s: s.objective)[: max(1, int(ocfg.top_k))])
 
-    top_steps = sorted(top_steps, key=lambda s: s.objective)[: max(1, int(ocfg.top_k))]
+    top_steps = sorted(top_steps, key=lambda s: s.objective)
     candidates: List[Dict[str, float]] = []
+    seen: set[Tuple[float, ...]] = set()
     for s in top_steps:
         mu_vec = s.mu_raw.view(-1)
+        key = tuple([float(v) for v in mu_vec.tolist()])
+        if key in seen:
+            continue
+        seen.add(key)
         candidates.append({name: float(mu_vec[i].item()) for i, name in enumerate(bounds.names)})
+        if len(candidates) >= max(1, int(ocfg.top_k)):
+            break
     return candidates, all_traj
