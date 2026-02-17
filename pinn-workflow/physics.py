@@ -4,10 +4,6 @@ import torch.autograd as autograd
 import pinn_config as config
 
 def compliance_scale(E, t):
-    """Return multiplicative scale for displacement u from network output v.
-
-    We use: u = (v / E^p) * (H / t)^alpha
-    """
     e_safe = torch.clamp(E, min=1e-8)
     t_safe = torch.clamp(t, min=1e-8)
     h_ref = float(getattr(config, "H", 1.0))
@@ -21,7 +17,6 @@ def v_to_u(v, E, t):
     return v * compliance_scale(E, t)
 
 def load_mask(x):
-    """Binary mask for load patch (1 inside, 0 outside)."""
     x_coord = x[:, 0]
     y_coord = x[:, 1]
     
@@ -304,11 +299,6 @@ def compute_loss(model, data, device, weights=None):
     return total_loss, losses
 
 def compute_residuals(model, data, device):
-    """Compute residual magnitudes for adaptive sampling.
-    
-    Returns:
-        Dictionary of residual magnitudes for each data type
-    """
     residuals = {}
 
     # --- PDE Residuals (Interior) ---

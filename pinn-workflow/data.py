@@ -53,18 +53,6 @@ if FEA_SOLVER_DIR not in sys.path:
 
 
 def load_fem_supervision_data(n_points_per_e=None, e_values=None, thickness_values=None):
-    """Load sparse FEM supervision data for hybrid training.
-    
-    Generates FEM solutions for each E value and samples sparse points.
-    
-    Args:
-        n_points_per_e: Number of points to sample per E value (default: config.N_DATA_POINTS // len(E))
-        e_values: List of E values to sample (default: config.DATA_E_VALUES)
-    
-    Returns:
-        x_data: (N, 8) tensor of input points [x, y, z, E, thickness, restitution, friction, v0]
-        u_data: (N, 3) tensor of target displacements [ux, uy, uz]
-    """
     import fem_solver
     
     if e_values is None:
@@ -174,7 +162,6 @@ def sample_domain(n, z_min, z_max):
     return torch.cat([x, y, z, e, t, restitution, friction, impact_velocity], dim=1)
 
 def sample_domain_under_patch(n, z_min, z_max):
-    """Sample interior points directly under the load patch."""
     x_min, x_max = config.LOAD_PATCH_X
     y_min, y_max = config.LOAD_PATCH_Y
     x = torch.rand(n, 1) * (x_max - x_min) + x_min
@@ -193,7 +180,6 @@ def sample_domain_under_patch(n, z_min, z_max):
     return torch.cat([x, y, z, e, t, restitution, friction, impact_velocity], dim=1)
 
 def sample_domain_residual_based(n, z_min, z_max, prev_pts, prev_residuals):
-    """Sample points weighted by residual magnitude."""
     # Check if residuals are too small - fall back to uniform sampling
     if prev_residuals.sum() < 1e-12 or torch.isnan(prev_residuals).any():
         return sample_domain(n, z_min, z_max)
@@ -297,7 +283,6 @@ def sample_boundaries(n, z_min, z_max):
     return torch.cat([p1, p2, p3, p4], dim=0)
 
 def sample_boundaries_residual_based(n, z_min, z_max, prev_pts, prev_residuals):
-    """Sample boundary points weighted by BC residual."""
     # Check if residuals are too small - fall back to uniform sampling
     if prev_residuals.sum() < 1e-12 or torch.isnan(prev_residuals).any():
         return sample_boundaries(n, z_min, z_max)
@@ -364,7 +349,6 @@ def sample_boundaries_residual_based(n, z_min, z_max, prev_pts, prev_residuals):
     return new_pts
 
 def sample_top_load(n):
-    """Sample points on load patch only."""
     # Loaded Patch: Lx/3 < x < 2Lx/3 AND Ly/3 < y < 2Ly/3
     xl = torch.rand(n, 1) * (config.Lx/3) + config.Lx/3
     yl = torch.rand(n, 1) * (config.Ly/3) + config.Ly/3
@@ -382,7 +366,6 @@ def sample_top_load(n):
     return torch.cat([xl, yl, zl, el, tl, rl, mul, v0l], dim=1)
 
 def sample_top_free(n):
-    """Sample points on free top surface (outside load patch)."""
     # Rejection sampling for points outside patch
     pts_free_list = []
     count = 0
@@ -416,7 +399,6 @@ def sample_top_free(n):
     return pts_free
 
 def sample_surface_residual_based(n, z_val, prev_pts, prev_residuals, constrain_load_patch=False, is_load_patch=False):
-    """Sample surface points weighted by traction residual."""
     # Check if residuals are too small - fall back to uniform sampling
     if prev_residuals.sum() < 1e-12 or torch.isnan(prev_residuals).any():
         if constrain_load_patch and is_load_patch:
@@ -537,7 +519,6 @@ def sample_interface(n, z_val):
     return torch.cat([x, y, z, e, t, r, mu, v0], dim=1)
 
 def sample_bottom(n):
-    """Sample points on bottom surface (z=0)."""
     x_bot = torch.rand(n, 1) * config.Lx
     y_bot = torch.rand(n, 1) * config.Ly
     z_bot = torch.zeros(n, 1)
@@ -554,17 +535,6 @@ def sample_bottom(n):
     return torch.cat([x_bot, y_bot, z_bot, e_bot, t_bot, r_bot, mu_bot, v0_bot], dim=1)
 
 def get_data(prev_data=None, residuals=None):
-    """Generate collocation points with optional residual-based sampling.
-    
-    Args:
-        prev_data: Previous training data dict (optional)
-        residuals: Dict of residuals for each data type (optional)
-                  Keys: 'interior', 'sides', 'top_load', 'top_free', 'bottom'
-                  Values: Tensor of residual magnitudes
-    
-    Returns:
-        Dictionary of training data
-    """
     z_min, z_max = config.Layer_Interfaces[0], config.Layer_Interfaces[1]
     
     # Decide whether to use residual-based sampling (50% uniform, 50% residual-based)
