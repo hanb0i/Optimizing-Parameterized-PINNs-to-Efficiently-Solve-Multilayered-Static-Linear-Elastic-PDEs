@@ -8,8 +8,26 @@ class LayerNet(nn.Module):
     def __init__(self, hidden_layers=2, hidden_units=32, activation=nn.Tanh()):
         super().__init__()
         layers = []
-        # Input: x, y, z_hat + 5 normalized params (E, t, r, mu, v0) + 3 physics features
-        current_dim = 8 + 3
+        # Fourier Features
+        self.fourier_dim = getattr(config, 'FOURIER_DIM', 0)
+        self.fourier_scale = getattr(config, 'FOURIER_SCALE', 1.0)
+        
+        # Spatial inputs to Fourier encode: x, y, z_hat (3 dims)
+        fourier_input_dim = 3 
+        
+        if self.fourier_dim > 0:
+            # Initialize random B matrix: (fourier_dim, fourier_input_dim)
+            B = torch.randn(self.fourier_dim, fourier_input_dim) * self.fourier_scale
+            self.register_buffer('B', B)
+            # Total input dim: 
+            #   Coords (3) [optional, kept usually]
+            # + Parameters (5)
+            # + Physics Feats (3)
+            # + Fourier (2 * fourier_dim)
+            # = 11 + 2 * fourier_dim
+            current_dim = 11 + 2 * self.fourier_dim
+        else:
+            current_dim = 11
         
         layers.append(nn.Linear(current_dim, hidden_units))
         layers.append(activation)
@@ -68,7 +86,19 @@ class LayerNet(nn.Module):
         feat_inv3 = ratio ** 3
         extra_feats = torch.cat([feat_inv1, feat_inv2, feat_inv3], dim=1)
         
-        x_scaled = torch.cat([x_coord, y_coord, z_hat, e_norm, t_norm, r_norm, mu_norm, v0_norm, extra_feats], dim=1)
+        # Base features
+        base_features = [x_coord, y_coord, z_hat, e_norm, t_norm, r_norm, mu_norm, v0_norm, extra_feats]
+        
+        if self.fourier_dim > 0:
+            # Fourier Encoding on Spatial Coords (x, y, z_hat)
+            spatial_input = torch.cat([x_coord, y_coord, z_hat], dim=1)
+            # Proj: (N, 3) @ (3, fourier_dim) -> (N, fourier_dim)
+            x_proj = (2.0 * torch.pi * spatial_input) @ self.B.T
+            fourier_features = torch.cat([torch.sin(x_proj), torch.cos(x_proj)], dim=1)
+            x_scaled = torch.cat(base_features + [fourier_features], dim=1)
+        else:
+            x_scaled = torch.cat(base_features, dim=1)
+            
         u_raw = self.net(x_scaled)
         
         if config.USE_HARD_SIDE_BC:

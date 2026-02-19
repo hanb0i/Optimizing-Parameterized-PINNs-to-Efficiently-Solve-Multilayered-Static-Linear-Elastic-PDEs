@@ -38,15 +38,13 @@ IMPACT_VELOCITY_REF = 1.0
 # Inference-time compliance correction for E:
 # Use u = v / E^p instead of v / E (p=1.0). This can help slightly reduce
 # high-E under/over-shoot without retraining.
-E_COMPLIANCE_POWER = 0.973
-
 # --- Parametric compliance scaling ---
 # Many plate-like problems scale strongly with thickness (often ~ 1/t^3).
 # We apply a simple thickness-aware scaling in the physics layer:
 #   u = (v / E) * (H / t)^alpha
 # where H is the baseline thickness (config.H) and t is the sampled thickness.
 # Set alpha=0.0 to disable.
-THICKNESS_COMPLIANCE_ALPHA = 1.234
+THICKNESS_COMPLIANCE_ALPHA = 0.0 # Disabled for Retraining (Phase 1) - Learn Physics Naturally
 
 def get_lame_params(E, nu):
     lm = (E * nu) / ((1 + nu) * (1 - 2 * nu))
@@ -64,7 +62,7 @@ PDE_LENGTH_SCALE = H
 
 # --- Boundary condition handling ---
 # Use hard mask early for shape, then switch to soft BCs for magnitude.
-USE_HARD_SIDE_BC = True
+USE_HARD_SIDE_BC = True # Experiment B: Hard BCs to eliminate boundary noise
 HARD_BC_EPOCHS = 1000
 
 # Load patch boundaries (normalized coordinates)
@@ -77,16 +75,16 @@ NEURONS = 64
 
 # --- Training Hyperparameters ---
 LEARNING_RATE = 1e-3
-EPOCHS_ADAM = 2000
+EPOCHS_ADAM = 2000 # Give it time to converge with high PDE weight
 EPOCHS_LBFGS = 0
 # SOAP optimizer
 SOAP_PRECONDITION_FREQUENCY = 10 # Lower = more frequent curvature updates; higher = cheaper but less responsive
 #Plot Physical Residuals Every N Epochs every 100 epochs. 
 WEIGHTS = {
-    'pde': 5.0,    # Reverted to 5.0 (Optimal: 0.4% Error at E=1, 10% at E=10)
-    'bc': 0.7,      # Slightly softer sides so load can gather more budget
-    'load': 5.0, # Optimal load weight
-    'energy': 0.63, # Per user request
+    'pde': 100.0,    # Increased massively (Experiment B: PDE Bias)
+    'bc': 1.0,      # Standard BC weight (Hard BCs remove loss, so this applies to TOP/BOT free surfaces)
+    'load': 10.0, # Strong load enforcement
+    'energy': 0.0, # Disabled
     'impact_invariance': 0.0,  # Set >0 only for neutral-parameter mode
     'impact_contact': 0.0002,   # Reduced to preserve FEA parity in no-supervision mode
     'friction_coulomb': 0.001,  # Reduced to preserve FEA parity in no-supervision mode
@@ -102,7 +100,7 @@ PDE_WEIGHT_START = WEIGHTS['pde']
 ENERGY_WEIGHT_START = WEIGHTS['energy']
 # Force soft side boundary conditions from the beginning.
 FORCE_SOFT_SIDE_BC_FROM_START = True
-SOFT_MODE_PDE_WEIGHT_SCALE = 3.0
+SOFT_MODE_PDE_WEIGHT_SCALE = 1.0 # Simplified: No auto-scaling, set base weights directly
 SOFT_MODE_LOAD_WEIGHT_SCALE = 1.0
 # Sampling
 N_INTERIOR = 15000 # Per layer
@@ -120,7 +118,7 @@ LOAD_PATCH_UZ_TARGET = -0.05  # Encourage the mean vertical deflection on the lo
 LOAD_PATCH_UZ_WEIGHT = 0.02   # Keep the auxiliary penalty small so shape stays intact
 
 # Fourier Features
-FOURIER_DIM = 0 # Number of Fourier frequencies
+FOURIER_DIM = 0 # Reverted to 0 to analyze Experiment B checkpoint
 FOURIER_SCALE = 1.0 # Standard deviation for frequency sampling
 
 # Hybrid / Parametric Training Data
