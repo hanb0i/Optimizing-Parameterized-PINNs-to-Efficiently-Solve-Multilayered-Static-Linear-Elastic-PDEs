@@ -5,6 +5,14 @@ import numpy as np
 Lx = 1.0
 Ly = 1.0
 H = 0.1  # Total height (baseline thickness)
+# Geometry mode:
+# - "box": default unit plate domain (current behavior)
+# - "cad": derive domain extents from an STL and sample in its bounding box
+GEOMETRY_MODE = "box"
+# Path to an STL file when `GEOMETRY_MODE="cad"`.
+CAD_STL_PATH = None  # e.g. "pinn-workflow/stl/unit_plate.stl"
+# If True, affinely map CAD bounds to [0,Lx]x[0,Ly]x[0,H] before training/inference.
+CAD_NORMALIZE_TO_CONFIG_BOUNDS = True
 # Single layer (homogeneous material)
 # z goes from 0 to H
 Layer_Interfaces = [0.0, H]

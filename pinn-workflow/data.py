@@ -3,6 +3,7 @@ import torch
 import numpy as np
 import os
 import pinn_config as config
+from cad_geometry import stl_bounds, sample_uniform_box, sample_uniform_rect_on_plane
 
 # Parameter range helper (keeps baseline configs intact)
 def _get_e_range():
@@ -535,6 +536,8 @@ def sample_bottom(n):
     return torch.cat([x_bot, y_bot, z_bot, e_bot, t_bot, r_bot, mu_bot, v0_bot], dim=1)
 
 def get_data(prev_data=None, residuals=None):
+    if getattr(config, "GEOMETRY_MODE", "box").lower() == "cad":
+        return get_data_cad(prev_data=prev_data, residuals=residuals)
     z_min, z_max = config.Layer_Interfaces[0], config.Layer_Interfaces[1]
     
     # Decide whether to use residual-based sampling (50% uniform, 50% residual-based)
@@ -623,4 +626,140 @@ def get_data(prev_data=None, residuals=None):
         'top_load': top_load,
         'top_free': top_free,
         'bottom': bot_free
+    }
+
+
+def _cad_params_for_points(n: int, thickness: float) -> torch.Tensor:
+    # Reuse the existing parameter sampling helpers where possible but keep CAD thickness fixed
+    # to match the CAD domain z-extent.
+    e_min, e_max = _get_e_range()
+    e = torch.rand(n, 1) * (e_max - e_min) + e_min
+
+    # Thickness: fixed to CAD z-extent for geometry consistency
+    t = torch.full((n, 1), float(thickness), dtype=torch.float32)
+
+    r_min, r_max = _get_restitution_range()
+    restitution = torch.rand(n, 1) * (r_max - r_min) + r_min
+    mu_min, mu_max = _get_friction_range()
+    friction = torch.rand(n, 1) * (mu_max - mu_min) + mu_min
+    v0_min, v0_max = _get_impact_velocity_range()
+    impact_velocity = torch.rand(n, 1) * (v0_max - v0_min) + v0_min
+    return torch.cat([e, t, restitution, friction, impact_velocity], dim=1)
+
+
+def get_data_cad(prev_data=None, residuals=None):
+    """
+    CAD/STL-backed sampling.
+
+    Current PiNN physics assumes a plate-like domain aligned with axes (top/bottom normals
+    aligned to +z/-z, and clamped sides at x/y min/max). For "simple CAD" plates exported
+    as STL, we approximate the domain as the STL's axis-aligned bounding box.
+    """
+    stl_path = getattr(config, "CAD_STL_PATH", None)
+    if not stl_path:
+        raise ValueError("`CAD_STL_PATH` must be set when `GEOMETRY_MODE='cad'`.")
+
+    b = stl_bounds(stl_path)
+    z_span = float(max(1e-12, b.size[2]))
+
+    # Optionally normalize CAD coordinates to the training coordinate system.
+    # This keeps compatibility with hard side BC masks and the existing load patch definition.
+    if getattr(config, "CAD_NORMALIZE_TO_CONFIG_BOUNDS", True):
+        dst_min = (0.0, 0.0, 0.0)
+        dst_max = (float(config.Lx), float(config.Ly), float(config.H))
+        thickness = float(config.H)
+    else:
+        dst_min = tuple(map(float, b.min_xyz))
+        dst_max = tuple(map(float, b.max_xyz))
+        thickness = z_span
+
+    # Sampling: interior/boundaries in the (possibly normalized) AABB.
+    # Residual-based sampling is currently disabled for CAD mode; it relies on the
+    # previous sampling distributions for each face type (box mode).
+    use_residual = False
+    _ = (prev_data, residuals, use_residual)
+
+    # Interior
+    interior_xyz = sample_uniform_box(int(config.N_INTERIOR), dst_min, dst_max)
+
+    # Sides: x=0/x=Lx/y=0/y=Ly; keep z uniform.
+    n_face = int(config.N_SIDES) // 4
+    x0 = sample_uniform_box(n_face, (dst_min[0], dst_min[1], dst_min[2]), (dst_min[0], dst_max[1], dst_max[2]))
+    x1 = sample_uniform_box(n_face, (dst_max[0], dst_min[1], dst_min[2]), (dst_max[0], dst_max[1], dst_max[2]))
+    y0 = sample_uniform_box(n_face, (dst_min[0], dst_min[1], dst_min[2]), (dst_max[0], dst_min[1], dst_max[2]))
+    y1 = sample_uniform_box(n_face, (dst_min[0], dst_max[1], dst_min[2]), (dst_max[0], dst_max[1], dst_max[2]))
+    sides_xyz = np.concatenate([x0, x1, y0, y1], axis=0)
+
+    # Top (z = max): split into load patch vs free surface using existing patch bounds.
+    z_top = float(dst_max[2])
+    top_load_xyz = sample_uniform_rect_on_plane(
+        int(config.N_TOP_LOAD),
+        float(config.LOAD_PATCH_X[0]),
+        float(config.LOAD_PATCH_X[1]),
+        float(config.LOAD_PATCH_Y[0]),
+        float(config.LOAD_PATCH_Y[1]),
+        z_top,
+    )
+    # Top free: sample full top, then reject points inside load patch.
+    top_free_xyz = sample_uniform_rect_on_plane(
+        int(config.N_TOP_FREE) * 2,
+        float(dst_min[0]),
+        float(dst_max[0]),
+        float(dst_min[1]),
+        float(dst_max[1]),
+        z_top,
+    )
+    in_patch = (
+        (top_free_xyz[:, 0] >= float(config.LOAD_PATCH_X[0]))
+        & (top_free_xyz[:, 0] <= float(config.LOAD_PATCH_X[1]))
+        & (top_free_xyz[:, 1] >= float(config.LOAD_PATCH_Y[0]))
+        & (top_free_xyz[:, 1] <= float(config.LOAD_PATCH_Y[1]))
+    )
+    top_free_xyz = top_free_xyz[~in_patch]
+    if top_free_xyz.shape[0] < int(config.N_TOP_FREE):
+        top_free_xyz = sample_uniform_rect_on_plane(
+            int(config.N_TOP_FREE),
+            float(dst_min[0]),
+            float(dst_max[0]),
+            float(dst_min[1]),
+            float(dst_max[1]),
+            z_top,
+        )
+    else:
+        top_free_xyz = top_free_xyz[: int(config.N_TOP_FREE)]
+
+    # Bottom (z = min)
+    z_bot = float(dst_min[2])
+    bottom_xyz = sample_uniform_rect_on_plane(
+        int(config.N_BOTTOM),
+        float(dst_min[0]),
+        float(dst_max[0]),
+        float(dst_min[1]),
+        float(dst_max[1]),
+        z_bot,
+    )
+
+    # NOTE: The PiNN is trained/defined in the returned coordinate system. If you disable
+    # normalization, you must also disable hard side BC masks (`USE_HARD_SIDE_BC`) or
+    # ensure coordinates are compatible with the mask logic in `pinn-workflow/model.py`.
+
+    # Assemble tensors (x,y,z,E,t,r,mu,v0)
+    interior_t = torch.tensor(interior_xyz, dtype=torch.float32)
+    sides_t = torch.tensor(sides_xyz, dtype=torch.float32)
+    top_load_t = torch.tensor(top_load_xyz, dtype=torch.float32)
+    top_free_t = torch.tensor(top_free_xyz, dtype=torch.float32)
+    bottom_t = torch.tensor(bottom_xyz, dtype=torch.float32)
+
+    interior = torch.cat([interior_t, _cad_params_for_points(len(interior_t), thickness)], dim=1)
+    sides = torch.cat([sides_t, _cad_params_for_points(len(sides_t), thickness)], dim=1)
+    top_load = torch.cat([top_load_t, _cad_params_for_points(len(top_load_t), thickness)], dim=1)
+    top_free = torch.cat([top_free_t, _cad_params_for_points(len(top_free_t), thickness)], dim=1)
+    bottom = torch.cat([bottom_t, _cad_params_for_points(len(bottom_t), thickness)], dim=1)
+
+    return {
+        "interior": [interior],
+        "sides": [sides],
+        "top_load": top_load,
+        "top_free": top_free,
+        "bottom": bottom,
     }
