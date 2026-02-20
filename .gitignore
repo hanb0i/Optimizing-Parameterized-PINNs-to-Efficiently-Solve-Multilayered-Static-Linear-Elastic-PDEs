@@ -3,3 +3,5 @@ third_party/
 .cache/
 .tmp/
 impact_pipeline_outputs/
+__pycache__/
+*.pyc

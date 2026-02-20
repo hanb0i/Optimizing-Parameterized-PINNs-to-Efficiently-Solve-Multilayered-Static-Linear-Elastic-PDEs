@@ -10,7 +10,7 @@ H = 0.1  # Total height (baseline thickness)
 # - "cad": derive domain extents from an STL and sample in its bounding box
 GEOMETRY_MODE = "cad"
 # Path to an STL file when `GEOMETRY_MODE="cad"`.
-CAD_STL_PATH = "pinn-workflow/sphere.stl"  # e.g. "pinn-workflow/stl/unit_plate.stl"
+CAD_STL_PATH = "pinn-workflow/stl/sphere.stl"  # e.g. "pinn-workflow/stl/unit_plate.stl"
 # If True, affinely map CAD bounds to [0,Lx]x[0,Ly]x[0,H] before training/inference.
 CAD_NORMALIZE_TO_CONFIG_BOUNDS = True
 # CAD sampler:
