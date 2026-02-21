@@ -22,6 +22,16 @@ CAD_SAMPLER = "tessellation"
 CAD_CLAMP_Z_FRAC = 0.02  # bottom cap thickness as fraction of (z_max - z_min)
 CAD_LOAD_Z_FRAC = 0.02   # top cap thickness as fraction of (z_max - z_min)
 CAD_BOTTOM_CLAMPED = True
+# When classifying boundary samples into clamp/load/free, optionally require normals
+# to be approximately aligned with +/-z. This helps avoid accidentally clamping/loading
+# vertical walls that merely have extreme z.
+CAD_BC_NORMAL_FILTER = True
+# Minimum |n·z_hat| for cap classification. (0.0 disables the threshold; 1.0 = perfectly aligned.)
+CAD_BC_NORMAL_COS_MIN = 0.5
+# For CAD tessellation, the traction target on the loaded region can be:
+# - "normal": pressure normal to the surface (target = -p0 * n)
+# - "global_z": vertical traction regardless of surface normal (target = [0,0,-p0])
+CAD_LOAD_DIRECTION = "normal"
 # Single layer (homogeneous material)
 # z goes from 0 to H
 Layer_Interfaces = [0.0, H]

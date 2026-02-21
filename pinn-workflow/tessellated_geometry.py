@@ -234,6 +234,7 @@ def sample_interior(
     nr_points: int,
     bounds_min: Tuple[float, float, float] | None = None,
     bounds_max: Tuple[float, float, float] | None = None,
+    compute_sdf: bool = True,
     compute_sdf_derivatives: bool = True,
     max_batches: int = 200,
 ) -> Dict[str, np.ndarray]:
@@ -247,10 +248,15 @@ def sample_interior(
     if np.any(bmax <= bmin):
         raise ValueError("Invalid bounds for interior sampling.")
 
+    if compute_sdf_derivatives:
+        compute_sdf = True
+
     pts_out = []
-    sdf_out = []
-    sdf_dir_out = []
+    sdf_out = [] if compute_sdf else None
+    sdf_dir_out = [] if compute_sdf_derivatives else None
     tries = 0
+    tested = 0
+    accepted = 0
     # Oversample and reject points outside the mesh.
     while sum(p.shape[0] for p in pts_out) < nr_points:
         if tries >= max_batches:
@@ -259,32 +265,49 @@ def sample_interior(
         n_batch = max(1024, nr_points)
         u = np.random.rand(n_batch, 3)
         pts = bmin[None, :] + u * (bmax - bmin)[None, :]
+        tested += int(pts.shape[0])
         inside = points_inside_mesh(surface, pts)
         pts = pts[inside]
+        accepted += int(pts.shape[0])
         if pts.shape[0] == 0:
             continue
 
-        dist, direction = unsigned_distance_and_dir(surface, pts)
-        # PhysicsNeMo convention: positive inside for CSG; tessellation returns "sdf" used with >0 interior.
-        # We follow that here: sdf = +distance for inside points.
-        sdf = dist
-
         pts_out.append(pts)
-        sdf_out.append(sdf)
-        sdf_dir_out.append(direction)
+        if compute_sdf:
+            dist, direction = unsigned_distance_and_dir(surface, pts)
+            # PhysicsNeMo convention: positive inside for CSG; tessellation returns "sdf" used with >0 interior.
+            # We follow that here: sdf = +distance for inside points.
+            sdf = dist
+            sdf_out.append(sdf)
+            if compute_sdf_derivatives:
+                sdf_dir_out.append(direction)
 
     pts_all = np.concatenate(pts_out, axis=0)[:nr_points]
-    sdf_all = np.concatenate(sdf_out, axis=0)[:nr_points]
-    dir_all = np.concatenate(sdf_dir_out, axis=0)[:nr_points]
+    if compute_sdf:
+        sdf_all = np.concatenate(sdf_out, axis=0)[:nr_points]
+    else:
+        sdf_all = np.zeros((nr_points, 1), dtype=np.float64)
+    if compute_sdf_derivatives:
+        dir_all = np.concatenate(sdf_dir_out, axis=0)[:nr_points]
+    else:
+        dir_all = None
+
+    # Estimate domain volume by rejection ratio within the sampling AABB.
+    # This is consistent with the interior sampling distribution and is useful for
+    # energy/work terms that need a characteristic domain volume for arbitrary CAD.
+    bbox_vol = float(np.prod(bmax - bmin))
+    vol_est = bbox_vol * (float(accepted) / float(max(1, tested)))
 
     out = {
         "x": pts_all[:, 0:1],
         "y": pts_all[:, 1:2],
         "z": pts_all[:, 2:3],
         "sdf": sdf_all,
-        "area": np.full((nr_points, 1), float(np.prod(bmax - bmin)) / float(nr_points), dtype=np.float64),
+        "area": np.full((nr_points, 1), vol_est / float(nr_points), dtype=np.float64),
+        "volume": np.array([[vol_est]], dtype=np.float64),
     }
     if compute_sdf_derivatives:
+        assert dir_all is not None
         out["sdf__x"] = dir_all[:, 0:1]
         out["sdf__y"] = dir_all[:, 1:2]
         out["sdf__z"] = dir_all[:, 2:3]

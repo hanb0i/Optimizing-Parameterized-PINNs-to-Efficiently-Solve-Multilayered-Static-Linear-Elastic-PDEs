@@ -24,6 +24,16 @@ def main():
     d = data.get_data()
     print(f"CAD STL: {config.CAD_STL_PATH}")
     print(f"CAD_SAMPLER: {getattr(config, 'CAD_SAMPLER', None)}")
+    print(
+        "CAD BC normal filter:",
+        getattr(config, "CAD_BC_NORMAL_FILTER", None),
+        "cos_min=",
+        getattr(config, "CAD_BC_NORMAL_COS_MIN", None),
+    )
+    if "domain_volume" in d:
+        print(f"domain_volume (est): {float(d['domain_volume']):.6g}")
+    if "top_load_area" in d:
+        print(f"top_load_area (est): {float(d['top_load_area']):.6g}")
     for k in ["interior", "sides"]:
         pts = d[k][0]
         xyz = pts[:, 0:3]

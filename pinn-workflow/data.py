@@ -782,6 +782,7 @@ def get_data_cad(prev_data=None, residuals=None):
             int(config.N_INTERIOR),
             bounds_min=bounds_min,
             bounds_max=bounds_max,
+            compute_sdf=False,
             compute_sdf_derivatives=False,
         )
         interior_xyz = np.concatenate([interior_dict["x"], interior_dict["y"], interior_dict["z"]], axis=1)
@@ -792,6 +793,8 @@ def get_data_cad(prev_data=None, residuals=None):
         # - free: all remaining boundary points (traction-free)
         clamp_frac = float(getattr(config, "CAD_CLAMP_Z_FRAC", 0.02))
         load_frac = float(getattr(config, "CAD_LOAD_Z_FRAC", 0.02))
+        use_normal_filter = bool(getattr(config, "CAD_BC_NORMAL_FILTER", False))
+        cos_min = float(getattr(config, "CAD_BC_NORMAL_COS_MIN", 0.0))
         z_min = float(surface.bounds_min[2])
         z_max = float(surface.bounds_max[2])
         z_span_eff = max(1e-12, z_max - z_min)
@@ -805,6 +808,9 @@ def get_data_cad(prev_data=None, residuals=None):
         clamp_pts_list, clamp_n_list = [], []
         load_pts_list, load_n_list = [], []
         free_pts_list, free_n_list = [], []
+
+        total_bnd = 0
+        load_bnd = 0
 
         def _stack_region(pts_list, n_list, n_take):
             if not pts_list:
@@ -828,6 +834,9 @@ def get_data_cad(prev_data=None, residuals=None):
 
             is_clamp = bz <= z_clamp
             is_top = bz >= z_load
+            if use_normal_filter and cos_min > 0.0:
+                is_clamp = is_clamp & (bnz <= -cos_min)
+                is_top = is_top & (bnz >= cos_min)
             in_patch = (
                 (bx >= float(config.LOAD_PATCH_X[0]))
                 & (bx <= float(config.LOAD_PATCH_X[1]))
@@ -836,6 +845,9 @@ def get_data_cad(prev_data=None, residuals=None):
             )
             is_load = is_top & in_patch
             is_free = ~(is_clamp | is_load)
+
+            total_bnd += int(len(bz))
+            load_bnd += int(np.count_nonzero(is_load))
 
             if sum(p.shape[0] for p in clamp_pts_list) < need_clamp:
                 clamp_pts_list.append(pts[is_clamp])
@@ -857,6 +869,12 @@ def get_data_cad(prev_data=None, residuals=None):
         sides_xyz, _sides_n = _stack_region(clamp_pts_list, clamp_n_list, need_clamp)
         top_load_xyz, top_load_n = _stack_region(load_pts_list, load_n_list, need_load)
         top_free_xyz, top_free_n = _stack_region(free_pts_list, free_n_list, need_free)
+
+        mesh_area_total = float(np.sum(surface.tri_areas))
+        if total_bnd > 0:
+            top_load_area = mesh_area_total * (float(load_bnd) / float(total_bnd))
+        else:
+            top_load_area = 0.0
 
         if sides_xyz.shape[0] < need_clamp:
             sides_xyz = sample_uniform_rect_on_plane(
@@ -924,4 +942,7 @@ def get_data_cad(prev_data=None, residuals=None):
     if sampler == "tessellation":
         out["top_load_normal"] = torch.tensor(top_load_n, dtype=torch.float32)
         out["top_free_normal"] = torch.tensor(top_free_n, dtype=torch.float32)
+        out["top_load_area"] = float(top_load_area)
+        if "volume" in interior_dict:
+            out["domain_volume"] = float(np.asarray(interior_dict["volume"]).reshape(-1)[0])
     return out

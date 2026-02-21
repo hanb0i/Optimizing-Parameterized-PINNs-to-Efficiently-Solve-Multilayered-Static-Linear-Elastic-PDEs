@@ -156,7 +156,12 @@ def compute_loss(model, data, device, weights=None):
     
     # Internal strain energy (volume integral, approximated by mean * volume)
     energy_density = 0.5 * torch.einsum('bij,bij->b', eps, sig)
-    internal_energy = energy_density.mean() * (config.Lx * config.Ly * t_local.mean())
+    domain_volume = data.get("domain_volume", None)
+    if domain_volume is not None:
+        vol_t = torch.tensor(float(domain_volume), device=device, dtype=energy_density.dtype)
+        internal_energy = energy_density.mean() * vol_t
+    else:
+        internal_energy = energy_density.mean() * (config.Lx * config.Ly * t_local.mean())
     
     # --- 2. Dirichlet BCs (Clamped Sides) ---
     x_side = data['sides'][0].to(device)
@@ -186,7 +191,12 @@ def compute_loss(model, data, device, weights=None):
     if cad_normals is not None:
         n_top = cad_normals.to(device)
         T = _traction_from_stress(sig_top, n_top)
-        target = -float(config.p0) * n_top
+        load_dir = str(getattr(config, "CAD_LOAD_DIRECTION", "normal")).lower()
+        if load_dir in {"global_z", "vertical", "z"}:
+            target = torch.zeros_like(n_top)
+            target[:, 2] = -float(config.p0)
+        else:
+            target = -float(config.p0) * n_top
         mask = None
         target_load = None
     else:
@@ -250,7 +260,9 @@ def compute_loss(model, data, device, weights=None):
         external_work = (-config.p0 * u_top[:, 2:3] * mask).mean() * patch_area
     else:
         # Approximate pressure work via Monte Carlo on the loaded surface samples.
-        external_work = (target * u_top).sum(dim=1, keepdim=True).mean() * patch_area
+        load_area = float(data.get("top_load_area", patch_area))
+        load_area_t = torch.tensor(load_area, device=device, dtype=u_top.dtype)
+        external_work = (target * u_top).sum(dim=1, keepdim=True).mean() * load_area_t
     energy_loss = internal_energy - external_work
     losses['energy'] = energy_loss
     total_loss += weights['energy'] * energy_loss
@@ -377,7 +389,12 @@ def compute_residuals(model, data, device):
     if cad_normals is not None:
         n_top = cad_normals.to(device)
         T = _traction_from_stress(sig_top, n_top)
-        target = -float(config.p0) * n_top
+        load_dir = str(getattr(config, "CAD_LOAD_DIRECTION", "normal")).lower()
+        if load_dir in {"global_z", "vertical", "z"}:
+            target = torch.zeros_like(n_top)
+            target[:, 2] = -float(config.p0)
+        else:
+            target = -float(config.p0) * n_top
     else:
         T = sig_top[:, :, 2]
         mask = load_mask(x_top_load).unsqueeze(1)

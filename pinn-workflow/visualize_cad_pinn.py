@@ -217,6 +217,7 @@ def main():
         )
     bnd = sample_boundary(surface, nr_points=20000)
     xyz = np.concatenate([bnd["x"], bnd["y"], bnd["z"]], axis=1)
+    nrm = np.concatenate([bnd["normal_x"], bnd["normal_y"], bnd["normal_z"]], axis=1)
 
     # Use reference parameters for a single forward pass
     E_val = float(getattr(config, "E_vals", [1.0])[0])
@@ -358,15 +359,30 @@ def main():
     fig.savefig(os.path.join(out_dir, "cad_top_surface_uz.png"), dpi=200)
     plt.close(fig)
 
-    # Load/free mask plot (shows where the "pressure patch" is on the CAD surface)
+    # CAD BC region plot (clamp/load/free) matching the tessellation sampler logic in `data.get_data_cad`.
     fig = plt.figure(figsize=(10, 8))
     ax = fig.add_subplot(111, projection="3d")
-    colors = np.full(len(xyz), 0.5, dtype=np.float64)
-    colors[is_top_free] = 0.0
-    colors[is_top_load] = 1.0
-    sc = ax.scatter(xyz[:, 0], xyz[:, 1], xyz[:, 2], c=colors, cmap="coolwarm", s=2, vmin=0.0, vmax=1.0)
-    fig.colorbar(sc, ax=ax, shrink=0.6, label="0=top_free, 1=top_load (else mid)")
-    ax.set_title("CAD surface regions used for BCs (top load patch vs top free)")
+    clamp_cap = float(getattr(config, "CAD_CLAMP_Z_FRAC", 0.02)) * z_span
+    z_clamp_thr = z_min + clamp_cap
+    use_normal_filter = bool(getattr(config, "CAD_BC_NORMAL_FILTER", False))
+    cos_min = float(getattr(config, "CAD_BC_NORMAL_COS_MIN", 0.0))
+    bnz = nrm[:, 2]
+
+    is_clamp = z <= z_clamp_thr
+    is_top_for_bc = z >= z_load_thr
+    if use_normal_filter and cos_min > 0.0:
+        is_clamp = is_clamp & (bnz <= -cos_min)
+        is_top_for_bc = is_top_for_bc & (bnz >= cos_min)
+    is_load = is_top_for_bc & in_patch
+    is_free = ~(is_clamp | is_load)
+
+    # Discrete region codes: clamp=-1, free=0, load=1
+    region = np.zeros(len(xyz), dtype=np.float64)
+    region[is_clamp] = -1.0
+    region[is_load] = 1.0
+    sc = ax.scatter(xyz[:, 0], xyz[:, 1], xyz[:, 2], c=region, cmap="coolwarm", s=2, vmin=-1.0, vmax=1.0)
+    fig.colorbar(sc, ax=ax, shrink=0.6, label="-1=clamp, 0=free, +1=load")
+    ax.set_title("CAD surface regions used for BCs (clamp vs load vs free)")
     ax.set_xlabel("x")
     ax.set_ylabel("y")
     ax.set_zlabel("z")
