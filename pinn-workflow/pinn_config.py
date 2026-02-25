@@ -8,7 +8,7 @@ H = 0.1  # Total height (baseline thickness)
 # Geometry mode:
 # - "box": default unit plate domain (current behavior)
 # - "cad": derive domain extents from an STL and sample in its bounding box
-GEOMETRY_MODE = "cad"
+GEOMETRY_MODE = "box"
 # Path to an STL file when `GEOMETRY_MODE="cad"`.
 CAD_STL_PATH = "pinn-workflow/stl/sphere.stl"  # e.g. "pinn-workflow/stl/unit_plate.stl"
 # If True, affinely map CAD bounds to [0,Lx]x[0,Ly]x[0,H] before training/inference.
@@ -75,6 +75,15 @@ TRAIN_FIXED_PARAMS = False
 TRAIN_FIXED_E = 1.0
 TRAIN_FIXED_TOTAL_THICKNESS = H
 
+# When TRAIN_FIXED_PARAMS=True, you can optionally pin per-layer parameters.
+# If left as None, it falls back to TRAIN_FIXED_E and equal thickness splits.
+TRAIN_FIXED_E1 = None
+TRAIN_FIXED_E2 = None
+TRAIN_FIXED_E3 = None
+TRAIN_FIXED_T1 = None
+TRAIN_FIXED_T2 = None
+TRAIN_FIXED_T3 = None
+
 # Optional: explicit E sweep values for `verify_parametric_pinn.py`.
 # If not set, it uses `np.linspace(E_RANGE[0], E_RANGE[1], PINN_VERIFY_E_STEPS)`.
 # VERIFY_E_SWEEP_VALUES = np.linspace(E_RANGE[0], E_RANGE[1], 10).tolist()
@@ -101,6 +110,14 @@ E_COMPLIANCE_POWER = 0.973
 # Set alpha=0.0 to disable.
 THICKNESS_COMPLIANCE_ALPHA = 1.234
 
+# How to interpret the network output when forming displacement u:
+# - "local": u = v / E_local (legacy scaling; can cancel stiffness in layered E)
+# - "none":  u = v (recommended for layered FEM parity)
+DISPLACEMENT_DECODE_MODE = "none"
+
+# Residual-based resampling sharpness (higher => focus more on worst points).
+RESAMPLE_RESIDUAL_POWER = 1.0
+
 def get_lame_params(E, nu):
     lm = (E * nu) / ((1 + nu) * (1 - 2 * nu))
     mu = E / (2 * (1 + nu))
@@ -110,6 +127,9 @@ Lame_Params = [get_lame_params(e, n) for e, n in zip(E_vals, nu_vals)]
 
 # --- Loading ---
 p0 = 1.0 # Load magnitude
+
+# Optional path to an FEA solution file used for evaluation/logging (not for supervision).
+FEA_NPY_PATH = "fea_solution.npy"
 
 # --- Unit-consistent loss scaling ---
 # div(sigma) has units of stress/length; scale by a characteristic length.
@@ -124,12 +144,44 @@ HARD_BC_EPOCHS = 1000
 # The FEA solver in `fea-workflow/solver/fem_solver.py` clamps x/y edges (Dirichlet).
 # Set True to match FEA (recommended for verification against `fea_solution.npy`).
 BOX_CLAMP_SIDES = True
+# Optionally enforce the box-mode side clamp by construction (prevents rigid-body drift).
+# When enabled, displacement is multiplied by a smooth factor that is 0 on x/y min/max faces.
+HARD_CLAMP_SIDES = False
+
+# When using a soft load mask, uniform sampling over the patch can over-emphasize
+# near-zero mask points. Weight the load traction residual by mask^p (renormalized).
+LOAD_MASK_LOSS_POWER = 1.0
 
 # Load patch boundaries (normalized coordinates)
 LOAD_PATCH_X = [Lx/3, 2*Lx/3]  # [0.333, 0.667]
 LOAD_PATCH_Y = [Ly/3, 2*Ly/3]  # [0.333, 0.667]
 # Match FEA solver's default: use a smooth quadratic load mask on the patch (max=1 at patch center).
 USE_SOFT_LOAD_MASK = True
+
+# When `USE_SOFT_LOAD_MASK=True`, bias top-load boundary sampling toward the patch center
+# by drawing points with probability ∝ mask(x,y)^p. Higher p focuses more on the peak.
+LOAD_MASK_SAMPLING_POWER = 1.0
+# Mix uniform-vs-biased sampling on the loaded patch:
+#   frac_biased=0 => all uniform; frac_biased=1 => all biased.
+LOAD_MASK_SAMPLING_BIASED_FRACTION = 0.5
+
+# Top-free sampling: allocate some points to a thin "ring" just outside the patch boundary
+# to better resolve steep gradients at the load edge.
+TOP_FREE_RING_FRACTION = 0.3
+TOP_FREE_RING_WIDTH_FRAC = 0.08  # fraction of patch size (max of dx,dy)
+
+# Layer-network gating:
+# The 3-layer model uses three subnetworks; if we "hard route" by z, u(z) can develop kinks
+# that the interior PDE cannot smooth out (because the routing is non-differentiable).
+# Use a smooth sigmoid blend across interfaces so the composite field is differentiable in z.
+LAYER_GATING = "soft"  # "soft" or "hard"
+LAYER_GATE_BETA = 200.0  # larger => sharper transitions around interfaces
+
+# Optional schedule: after PATCH_FOCUS_EPOCH, increase mask-based sampling/loss focus.
+# This helps match the local indentation profile without permanently harming global fit.
+PATCH_FOCUS_EPOCH = None  # e.g. 200
+PATCH_FOCUS_MASK_SAMPLING_POWER = 2.0
+PATCH_FOCUS_MASK_LOSS_POWER = 2.0
 
 # --- Network Architecture ---
 LAYERS = 4
@@ -145,6 +197,12 @@ SOAP_PRECONDITION_FREQUENCY = 10 # Lower = more frequent curvature updates; high
 WEIGHTS = {
     'pde': 5.0,    # Reverted to 5.0 (Optimal: 0.4% Error at E=1, 10% at E=10)
     'bc': 0.7,      # Slightly softer sides so load can gather more budget
+    # Optional split of boundary weights:
+    # - clamp: Dirichlet enforcement on clamped faces (box sides or CAD bottom cap)
+    # - free:  traction-free enforcement on free faces (top free / side free / bottom free)
+    # If omitted, both fall back to 'bc'.
+    # 'clamp': 0.7,
+    # 'free': 0.7,
     'load': 5.0, # Optimal load weight
     'energy': 0.63, # Per user request
     'impact_invariance': 0.0,  # Set >0 only for neutral-parameter mode
@@ -153,6 +211,8 @@ WEIGHTS = {
     'friction_stick': 0.0005,   # Reduced to preserve FEA parity in no-supervision mode
     'interface_u': 5.0,
     'interface_t': 0.5,
+    'interface_band_u': 1.0,
+    'interface_band_grad': 0.5,
     'data': 1.0
 }
 
@@ -172,6 +232,8 @@ N_TOP_LOAD = 6000  # Load patch (more points to boost displacement)
 N_TOP_FREE = 2000  # Top free surface
 N_BOTTOM = 2000  # Bottom free surface
 N_INTERFACES = 4000  # Per interface plane (bonded 3-layer stack has 2 interfaces)
+N_INTERFACE_BAND = 2000  # Near-interface samples for u-continuity smoothing
+INTERFACE_BAND_FRAC = 0.05  # band half-width as fraction of total thickness
 UNDER_PATCH_FRACTION = 0.95 # More interior points focus under the load patch
 
 #Resampling/perturbation control

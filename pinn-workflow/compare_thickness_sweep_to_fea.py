@@ -16,6 +16,7 @@ if FEA_SOLVER_DIR not in sys.path:
 
 import pinn_config as config
 import model
+import physics
 import fem_solver
 
 
@@ -93,6 +94,12 @@ def main() -> None:
     ap.add_argument("--model", default="pinn_model.pth")
     ap.add_argument("--device", default=None)
     ap.add_argument("--out_dir", default="thickness_fea_compare")
+    ap.add_argument(
+        "--hard_clamp_sides",
+        type=int,
+        default=None,
+        help="If set, overrides pinn_config.HARD_CLAMP_SIDES for evaluation (0/1).",
+    )
 
     ap.add_argument("--Lx", type=float, default=float(getattr(config, "Lx", 1.0)))
     ap.add_argument("--Ly", type=float, default=float(getattr(config, "Ly", 1.0)))
@@ -107,6 +114,11 @@ def main() -> None:
     ap.add_argument("--ne_x", type=int, default=20)
     ap.add_argument("--ne_y", type=int, default=20)
     ap.add_argument("--ne_z", type=int, default=20)
+    ap.add_argument(
+        "--decode_mode",
+        default=None,
+        help="Override pinn_config.DISPLACEMENT_DECODE_MODE for evaluation (e.g. none|local|global).",
+    )
 
     ap.add_argument("--cases", default=None)
     args = ap.parse_args()
@@ -118,6 +130,10 @@ def main() -> None:
     layers, neurons = _infer_arch_from_state_dict(sd)
     config.LAYERS = int(layers)
     config.NEURONS = int(neurons)
+    if args.hard_clamp_sides is not None:
+        config.HARD_CLAMP_SIDES = bool(int(args.hard_clamp_sides))
+    if args.decode_mode is not None:
+        config.DISPLACEMENT_DECODE_MODE = str(args.decode_mode)
     pinn = model.MultiLayerPINN().to(device)
     pinn.load_state_dict(sd, strict=False)
     pinn.eval()
@@ -167,7 +183,9 @@ def main() -> None:
         params = np.array([args.E1, c.t1, args.E2, c.t2, args.E3, c.t3, 0.5, 0.3, 1.0], dtype=np.float32)[None, :]
         inp = np.concatenate([pts, np.repeat(params, pts.shape[0], axis=0)], axis=1)
         with torch.no_grad():
-            u_pred = pinn(torch.tensor(inp, dtype=torch.float32, device=device)).cpu().numpy().astype(np.float32).reshape(u_true.shape)
+            x_tensor = torch.tensor(inp, dtype=torch.float32, device=device)
+            v = pinn(x_tensor)
+            u_pred = physics.decode_u(v, x_tensor).cpu().numpy().astype(np.float32).reshape(u_true.shape)
 
         # Metrics
         flat_pred = u_pred.reshape(-1, 3)
@@ -249,4 +267,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

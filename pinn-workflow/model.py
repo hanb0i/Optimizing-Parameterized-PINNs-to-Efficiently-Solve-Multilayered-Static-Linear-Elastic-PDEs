@@ -145,13 +145,34 @@ class MultiLayerPINN(nn.Module):
         if layer_idx is not None:
             return self.layers[int(layer_idx)](x)
 
-        idx = self._layer_idx(x)
-        out = torch.empty((x.shape[0], 3), device=x.device, dtype=x.dtype)
-        for li in (0, 1, 2):
-            m = idx == li
-            if torch.any(m):
-                out[m] = self.layers[li](x[m])
-        return out
+        gating = str(getattr(config, "LAYER_GATING", "hard")).lower().strip()
+        if gating == "hard":
+            idx = self._layer_idx(x)
+            out = torch.empty((x.shape[0], 3), device=x.device, dtype=x.dtype)
+            for li in (0, 1, 2):
+                m = idx == li
+                if torch.any(m):
+                    out[m] = self.layers[li](x[m])
+            return out
+
+        # Soft gating: differentiable blend across interfaces.
+        # w0 = 1 - s1, w1 = s1*(1-s2), w2 = s2, where s1/s2 are sigmoids around z1/z2.
+        z = x[:, 2:3]
+        z1, z2 = self._interfaces(x)
+        beta = float(getattr(config, "LAYER_GATE_BETA", 200.0))
+        s1 = torch.sigmoid(beta * (z - z1))
+        s2 = torch.sigmoid(beta * (z - z2))
+        w0 = 1.0 - s1
+        w1 = s1 * (1.0 - s2)
+        w2 = s2
+        # Normalize for safety.
+        ws = (w0 + w1 + w2).clamp_min(1e-8)
+        w0, w1, w2 = w0 / ws, w1 / ws, w2 / ws
+
+        u0 = self.layers[0](x)
+        u1 = self.layers[1](x)
+        u2 = self.layers[2](x)
+        return w0 * u0 + w1 * u1 + w2 * u2
 
     def predict_all(self, x):
         return self.forward(x)

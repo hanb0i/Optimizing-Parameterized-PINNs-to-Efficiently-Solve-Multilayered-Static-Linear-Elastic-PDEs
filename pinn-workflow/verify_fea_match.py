@@ -12,6 +12,36 @@ if PINN_WORKFLOW_DIR not in sys.path:
 
 import pinn_config as config
 import model
+import physics
+
+
+def _infer_arch_from_state_dict(sd: dict) -> tuple[int, int]:
+    """
+    Infer (hidden_layers, hidden_units) from a LayerNet state dict.
+    Expects keys like: layers.0.net.0.weight (hidden_units, 15)
+    and final: layers.0.net.{last}.weight (3, hidden_units).
+    """
+    w0 = sd.get("layers.0.net.0.weight", None)
+    if w0 is None:
+        return int(getattr(config, "LAYERS", 4)), int(getattr(config, "NEURONS", 64))
+    hidden_units = int(w0.shape[0])
+    # Count Linear layers inside net by scanning indices.
+    # In nn.Sequential, Linear weights appear at even indices: 0,2,4,...,2*hidden_layers
+    linear_indices = set()
+    for k in sd.keys():
+        if not k.startswith("layers.0.net.") or not k.endswith(".weight"):
+            continue
+        try:
+            idx = int(k.split(".")[3])
+        except Exception:
+            continue
+        linear_indices.add(idx)
+    if not linear_indices:
+        return int(getattr(config, "LAYERS", 4)), hidden_units
+    n_linear = len(linear_indices)
+    # n_linear = hidden_layers + 1 => hidden_layers = n_linear - 1
+    hidden_layers = max(1, int(n_linear - 1))
+    return hidden_layers, hidden_units
 
 
 def _build_inputs_from_fea(
@@ -58,8 +88,14 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Evaluate trained 3-layer PiNN against fea_solution.npy (no supervision).")
     ap.add_argument("--fea", default="fea_solution.npy", help="Path to FEA npy (dict with x,y,z,u).")
     ap.add_argument("--model", default="pinn_model.pth", help="Path to trained PINN checkpoint.")
-    ap.add_argument("--layers", type=int, default=int(getattr(config, "LAYERS", 4)))
-    ap.add_argument("--neurons", type=int, default=int(getattr(config, "NEURONS", 64)))
+    ap.add_argument("--layers", type=int, default=None, help="Override hidden layers (default: infer from checkpoint).")
+    ap.add_argument("--neurons", type=int, default=None, help="Override hidden units (default: infer from checkpoint).")
+    ap.add_argument(
+        "--hard_clamp_sides",
+        type=int,
+        default=None,
+        help="If set, overrides pinn_config.HARD_CLAMP_SIDES for evaluation (0/1).",
+    )
 
     ap.add_argument("--E1", type=float, default=1.0)
     ap.add_argument("--E2", type=float, default=1.0)
@@ -77,8 +113,12 @@ def main() -> None:
     if not os.path.exists(args.model):
         raise FileNotFoundError(args.model)
 
-    config.LAYERS = int(args.layers)
-    config.NEURONS = int(args.neurons)
+    sd = torch.load(args.model, map_location="cpu", weights_only=False)
+    inferred_layers, inferred_neurons = _infer_arch_from_state_dict(sd)
+    config.LAYERS = int(args.layers) if args.layers is not None else int(inferred_layers)
+    config.NEURONS = int(args.neurons) if args.neurons is not None else int(inferred_neurons)
+    if args.hard_clamp_sides is not None:
+        config.HARD_CLAMP_SIDES = bool(int(args.hard_clamp_sides))
 
     fem = np.load(args.fea, allow_pickle=True).item()
     X, Y, Z, U = fem["x"], fem["y"], fem["z"], fem["u"]
@@ -102,25 +142,18 @@ def main() -> None:
 
     device = torch.device("cpu")
     pinn = model.MultiLayerPINN().to(device)
-    pinn.load_state_dict(torch.load(args.model, map_location=device, weights_only=False), strict=False)
+    pinn.load_state_dict(sd, strict=False)
     pinn.eval()
 
     with torch.no_grad():
-        v = pinn(torch.tensor(u_in, dtype=torch.float32, device=device)).cpu().numpy().astype(np.float64)
-
-    # Decode u from v using the same convention as physics (u=v/E_local).
-    # Here, we assume FEA file corresponds to a homogeneous E case unless you pass different E1/E2/E3.
-    # If you pass distinct E's, the model will be evaluated accordingly.
-    # For reporting, we still compute u_pred directly as v/E_local (piecewise by z).
-    z = Z.ravel().astype(np.float64)
-    z1 = float(args.t1)
-    z2 = float(args.t1 + args.t2)
-    E_local = np.where(z < z1, float(args.E1), np.where(z < z2, float(args.E2), float(args.E3)))
-    u_pred = v / E_local.reshape(-1, 1)
+        x_tensor = torch.tensor(u_in, dtype=torch.float32, device=device)
+        v = pinn(x_tensor)
+        u_pred = physics.decode_u(v, x_tensor).cpu().numpy().astype(np.float64)
 
     m_all = _metrics(u_pred, u_true)
 
     H = float(getattr(config, "H", t_total))
+    z = Z.ravel().astype(np.float64)
     top = np.isclose(z, H)
     x = X.ravel()
     y = Y.ravel()
@@ -150,4 +183,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

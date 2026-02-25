@@ -26,6 +26,106 @@ _DIN = 12
 def _uniform(n: int, lo: float, hi: float, *, device=None) -> torch.Tensor:
     return torch.rand(n, 1, device=device) * (hi - lo) + lo
 
+def _load_mask_xy(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    """
+    Soft quadratic load mask on the top patch, matching `physics.load_mask`/FEA.
+    Returns (N,1) tensor in [0,1].
+    """
+    x_min, x_max = map(float, config.LOAD_PATCH_X)
+    y_min, y_max = map(float, config.LOAD_PATCH_Y)
+    in_patch = (x >= x_min) & (x <= x_max) & (y >= y_min) & (y <= y_max)
+    if not bool(getattr(config, "USE_SOFT_LOAD_MASK", True)):
+        return in_patch.to(dtype=torch.float32)
+    dx = float(x_max - x_min) if float(x_max - x_min) != 0.0 else 1.0
+    dy = float(y_max - y_min) if float(y_max - y_min) != 0.0 else 1.0
+    x_norm = (x - x_min) / dx
+    y_norm = (y - y_min) / dy
+    soft = 16.0 * x_norm * (1.0 - x_norm) * y_norm * (1.0 - y_norm)
+    soft = torch.clamp(soft, min=0.0)
+    return soft.to(dtype=torch.float32) * in_patch.to(dtype=torch.float32)
+
+def _sample_xy_on_patch_biased(n: int, *, device=None) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Sample (x,y) on the patch, optionally biased by mask^p (renormalized) to emphasize center.
+    """
+    x_min, x_max = map(float, config.LOAD_PATCH_X)
+    y_min, y_max = map(float, config.LOAD_PATCH_Y)
+    power = float(getattr(config, "LOAD_MASK_SAMPLING_POWER", 0.0))
+    frac_biased = float(getattr(config, "LOAD_MASK_SAMPLING_BIASED_FRACTION", 1.0))
+    frac_biased = max(0.0, min(frac_biased, 1.0))
+    if (not bool(getattr(config, "USE_SOFT_LOAD_MASK", True))) or power <= 0.0 or frac_biased <= 0.0:
+        return _uniform(n, x_min, x_max, device=device), _uniform(n, y_min, y_max, device=device)
+
+    n_b = int(round(n * frac_biased))
+    n_u = max(0, int(n - n_b))
+
+    # Oversample candidates then draw with probability ∝ mask^power.
+    m = max(n_b, int(6 * n_b))
+    xc = _uniform(m, x_min, x_max, device=device)
+    yc = _uniform(m, y_min, y_max, device=device)
+    w = _load_mask_xy(xc, yc).clamp_min(0.0) ** power
+    if float(w.sum()) <= 0.0 or torch.isnan(w).any():
+        idx = torch.randint(0, m, (n_b,), device=xc.device)
+    else:
+        p = (w[:, 0] / w.sum()).to(dtype=torch.float32)
+        idx = torch.multinomial(p, num_samples=n_b, replacement=True)
+    xb = xc[idx]
+    yb = yc[idx]
+    if n_u == 0:
+        return xb, yb
+    xu = _uniform(n_u, x_min, x_max, device=device)
+    yu = _uniform(n_u, y_min, y_max, device=device)
+    return torch.cat([xu, xb], dim=0), torch.cat([yu, yb], dim=0)
+
+def _sample_xy_top_free_ring(n: int, *, device=None) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Sample points on the top surface just outside the load patch boundary (a thin ring).
+    """
+    x0, x1 = map(float, config.LOAD_PATCH_X)
+    y0, y1 = map(float, config.LOAD_PATCH_Y)
+    dx = abs(x1 - x0)
+    dy = abs(y1 - y0)
+    width_frac = float(getattr(config, "TOP_FREE_RING_WIDTH_FRAC", 0.08))
+    w = width_frac * max(dx, dy)
+    w = max(w, 1e-6)
+
+    # Candidate region: expanded patch bounding box.
+    xmin = max(0.0, x0 - w)
+    xmax = min(float(config.Lx), x1 + w)
+    ymin = max(0.0, y0 - w)
+    ymax = min(float(config.Ly), y1 + w)
+
+    out_x, out_y = [], []
+    need = int(n)
+    for _ in range(20):
+        if need <= 0:
+            break
+        m = max(2000, int(6 * need))
+        xc = _uniform(m, xmin, xmax, device=device)
+        yc = _uniform(m, ymin, ymax, device=device)
+        in_patch = ((xc >= x0) & (xc <= x1) & (yc >= y0) & (yc <= y1))[:, 0]
+        # outside patch but inside expanded region (i.e. within ~w of patch boundary)
+        sel = ~in_patch
+        xs = xc[sel]
+        ys = yc[sel]
+        if xs.numel() == 0:
+            continue
+        take = min(need, xs.shape[0])
+        out_x.append(xs[:take])
+        out_y.append(ys[:take])
+        need -= take
+    if need > 0:
+        # fallback: uniform outside patch
+        m = max(2 * need, 2000)
+        xc = _uniform(m, 0.0, float(config.Lx), device=device)
+        yc = _uniform(m, 0.0, float(config.Ly), device=device)
+        in_patch = ((xc >= x0) & (xc <= x1) & (yc >= y0) & (yc <= y1))[:, 0]
+        xs = xc[~in_patch][:need]
+        ys = yc[~in_patch][:need]
+        out_x.append(xs)
+        out_y.append(ys)
+    return torch.cat(out_x, dim=0), torch.cat(out_y, dim=0)
+
 
 def _sample_layer_params(n: int, *, total_thickness: float | None = None, device=None) -> torch.Tensor:
     """
@@ -35,12 +135,39 @@ def _sample_layer_params(n: int, *, total_thickness: float | None = None, device
     if bool(getattr(config, "TRAIN_FIXED_PARAMS", False)):
         E = float(getattr(config, "TRAIN_FIXED_E", 1.0))
         T = float(getattr(config, "TRAIN_FIXED_TOTAL_THICKNESS", getattr(config, "H", 0.1)))
-        t1 = torch.full((n, 1), T / 3.0, dtype=torch.float32, device=device).clamp_min(1e-4)
-        t2 = torch.full((n, 1), T / 3.0, dtype=torch.float32, device=device).clamp_min(1e-4)
-        t3 = torch.full((n, 1), T / 3.0, dtype=torch.float32, device=device).clamp_min(1e-4)
-        E1 = torch.full((n, 1), E, dtype=torch.float32, device=device)
-        E2 = torch.full((n, 1), E, dtype=torch.float32, device=device)
-        E3 = torch.full((n, 1), E, dtype=torch.float32, device=device)
+
+        E1_cfg = getattr(config, "TRAIN_FIXED_E1", None)
+        E2_cfg = getattr(config, "TRAIN_FIXED_E2", None)
+        E3_cfg = getattr(config, "TRAIN_FIXED_E3", None)
+        t1_cfg = getattr(config, "TRAIN_FIXED_T1", None)
+        t2_cfg = getattr(config, "TRAIN_FIXED_T2", None)
+        t3_cfg = getattr(config, "TRAIN_FIXED_T3", None)
+
+        if E1_cfg is None and E2_cfg is None and E3_cfg is None:
+            E1_val = E2_val = E3_val = E
+        else:
+            E1_val = float(E if E1_cfg is None else E1_cfg)
+            E2_val = float(E if E2_cfg is None else E2_cfg)
+            E3_val = float(E if E3_cfg is None else E3_cfg)
+
+        if t1_cfg is None and t2_cfg is None and t3_cfg is None:
+            t1_val = t2_val = t3_val = T / 3.0
+        else:
+            t1_val = float(T / 3.0 if t1_cfg is None else t1_cfg)
+            t2_val = float(T / 3.0 if t2_cfg is None else t2_cfg)
+            t3_val = float(T / 3.0 if t3_cfg is None else t3_cfg)
+            tsum = max(1e-8, t1_val + t2_val + t3_val)
+            scale = float(T) / tsum
+            t1_val *= scale
+            t2_val *= scale
+            t3_val *= scale
+
+        t1 = torch.full((n, 1), t1_val, dtype=torch.float32, device=device).clamp_min(1e-4)
+        t2 = torch.full((n, 1), t2_val, dtype=torch.float32, device=device).clamp_min(1e-4)
+        t3 = torch.full((n, 1), t3_val, dtype=torch.float32, device=device).clamp_min(1e-4)
+        E1 = torch.full((n, 1), E1_val, dtype=torch.float32, device=device)
+        E2 = torch.full((n, 1), E2_val, dtype=torch.float32, device=device)
+        E3 = torch.full((n, 1), E3_val, dtype=torch.float32, device=device)
         r_ref = float(getattr(config, "RESTITUTION_REF", 0.5))
         mu_ref = float(getattr(config, "FRICTION_REF", 0.3))
         v0_ref = float(getattr(config, "IMPACT_VELOCITY_REF", 1.0))
@@ -649,9 +776,74 @@ def get_data(prev_data=None, residuals=None):
     if getattr(config, "GEOMETRY_MODE", "box").lower() == "cad":
         return get_data_cad(prev_data=prev_data, residuals=residuals)
 
-    # NOTE: This 3-layer laminate sampler currently ignores residual-based adaptive sampling.
-    # It can be reintroduced after the new BC key structure stabilizes.
-    _ = (prev_data, residuals)
+    def _weighted_choice(weights: torch.Tensor, k: int) -> torch.Tensor:
+        w = torch.clamp(weights, min=0.0)
+        if w.numel() == 0:
+            return torch.zeros((0,), dtype=torch.long)
+        if float(w.detach().sum()) <= 0.0 or torch.isnan(w).any():
+            return torch.randint(0, w.numel(), (k,), dtype=torch.long)
+        probs = (w / w.sum()).to(dtype=torch.float32)
+        return torch.multinomial(probs, num_samples=k, replacement=True)
+
+    def _perturb_xyz(x: torch.Tensor, *, t_total: torch.Tensor) -> torch.Tensor:
+        noise = float(getattr(config, "SAMPLING_NOISE_SCALE", 0.05))
+        out = x.clone()
+        out[:, 0:1] = out[:, 0:1] + (torch.rand_like(out[:, 0:1]) - 0.5) * 2.0 * noise * float(config.Lx)
+        out[:, 1:2] = out[:, 1:2] + (torch.rand_like(out[:, 1:2]) - 0.5) * 2.0 * noise * float(config.Ly)
+        out[:, 2:3] = out[:, 2:3] + (torch.rand_like(out[:, 2:3]) - 0.5) * 2.0 * noise * t_total
+        out[:, 0:1] = torch.clamp(out[:, 0:1], 0.0, float(config.Lx))
+        out[:, 1:2] = torch.clamp(out[:, 1:2], 0.0, float(config.Ly))
+        out[:, 2:3] = torch.clamp(out[:, 2:3], min=0.0)
+        out[:, 2:3] = torch.minimum(out[:, 2:3], t_total)
+        return out
+
+    def _resample_region(prev_pts: torch.Tensor, prev_res: torch.Tensor, n: int, *, region: str) -> torch.Tensor:
+        if prev_pts is None or prev_pts.shape[0] == 0 or n == 0:
+            return prev_pts[:0] if prev_pts is not None else torch.zeros((0, _DIN), dtype=torch.float32)
+        power = float(getattr(config, "RESAMPLE_RESIDUAL_POWER", 1.0))
+        w = torch.clamp(prev_res.to(prev_pts.device), min=0.0) ** power
+        idx = _weighted_choice(w, n)
+        pts = prev_pts[idx].clone()
+        params = pts[:, 3:]
+        t_total = _total_thickness_from_params(params)
+        pts = _perturb_xyz(pts, t_total=t_total)
+
+        if region == "bottom":
+            pts[:, 2:3] = 0.0
+        elif region in {"top_load", "top_free"}:
+            pts[:, 2:3] = t_total
+        elif region == "sides":
+            x = pts[:, 0:1]
+            y = pts[:, 1:2]
+            d_x0 = torch.abs(x - 0.0)
+            d_x1 = torch.abs(x - float(config.Lx))
+            d_y0 = torch.abs(y - 0.0)
+            d_y1 = torch.abs(y - float(config.Ly))
+            d = torch.cat([d_x0, d_x1, d_y0, d_y1], dim=1)
+            which = torch.argmin(d, dim=1)
+            pts[which == 0, 0] = 0.0
+            pts[which == 1, 0] = float(config.Lx)
+            pts[which == 2, 1] = 0.0
+            pts[which == 3, 1] = float(config.Ly)
+        return pts
+
+    def _side_normals_from_points(pts: torch.Tensor) -> torch.Tensor:
+        if pts.shape[0] == 0:
+            return torch.zeros((0, 3), dtype=torch.float32)
+        x = pts[:, 0:1]
+        y = pts[:, 1:2]
+        d_x0 = torch.abs(x - 0.0)
+        d_x1 = torch.abs(x - float(config.Lx))
+        d_y0 = torch.abs(y - 0.0)
+        d_y1 = torch.abs(y - float(config.Ly))
+        d = torch.cat([d_x0, d_x1, d_y0, d_y1], dim=1)
+        which = torch.argmin(d, dim=1)
+        nrm = torch.zeros((pts.shape[0], 3), dtype=torch.float32)
+        nrm[which == 0, 0] = -1.0
+        nrm[which == 1, 0] = 1.0
+        nrm[which == 2, 1] = -1.0
+        nrm[which == 3, 1] = 1.0
+        return nrm
 
     # Interior (optionally bias under the load patch)
     n_int = int(config.N_INTERIOR)
@@ -662,58 +854,124 @@ def get_data(prev_data=None, residuals=None):
 
     parts = []
     if n_uniform > 0:
-        params_u = _sample_layer_params(n_uniform)
-        T_u = _total_thickness_from_params(params_u)
-        xu = _uniform(n_uniform, 0.0, float(config.Lx))
-        yu = _uniform(n_uniform, 0.0, float(config.Ly))
-        zu = torch.rand(n_uniform, 1) * T_u
-        parts.append(_assemble_input(torch.cat([xu, yu, zu], dim=1), params_u))
+        if prev_data is not None and residuals is not None and "interior" in residuals:
+            prev_int = prev_data["interior"][0]
+            prev_res = residuals["interior"].to(dtype=torch.float32)
+            parts.append(_resample_region(prev_int, prev_res, n_uniform, region="interior"))
+        else:
+            params_u = _sample_layer_params(n_uniform)
+            T_u = _total_thickness_from_params(params_u)
+            xu = _uniform(n_uniform, 0.0, float(config.Lx))
+            yu = _uniform(n_uniform, 0.0, float(config.Ly))
+            zu = torch.rand(n_uniform, 1) * T_u
+            parts.append(_assemble_input(torch.cat([xu, yu, zu], dim=1), params_u))
     if n_patch > 0:
-        params_p = _sample_layer_params(n_patch)
-        T_p = _total_thickness_from_params(params_p)
-        xp = _uniform(n_patch, float(config.LOAD_PATCH_X[0]), float(config.LOAD_PATCH_X[1]))
-        yp = _uniform(n_patch, float(config.LOAD_PATCH_Y[0]), float(config.LOAD_PATCH_Y[1]))
-        zp = torch.rand(n_patch, 1) * T_p
-        parts.append(_assemble_input(torch.cat([xp, yp, zp], dim=1), params_p))
+        if prev_data is not None and residuals is not None and "interior" in residuals:
+            prev_int = prev_data["interior"][0]
+            prev_res = residuals["interior"].to(dtype=torch.float32)
+            pts = _resample_region(prev_int, prev_res, n_patch, region="interior")
+            pts[:, 0:1] = torch.clamp(pts[:, 0:1], float(config.LOAD_PATCH_X[0]), float(config.LOAD_PATCH_X[1]))
+            pts[:, 1:2] = torch.clamp(pts[:, 1:2], float(config.LOAD_PATCH_Y[0]), float(config.LOAD_PATCH_Y[1]))
+            parts.append(pts)
+        else:
+            params_p = _sample_layer_params(n_patch)
+            T_p = _total_thickness_from_params(params_p)
+            xp = _uniform(n_patch, float(config.LOAD_PATCH_X[0]), float(config.LOAD_PATCH_X[1]))
+            yp = _uniform(n_patch, float(config.LOAD_PATCH_Y[0]), float(config.LOAD_PATCH_Y[1]))
+            zp = torch.rand(n_patch, 1) * T_p
+            parts.append(_assemble_input(torch.cat([xp, yp, zp], dim=1), params_p))
 
     interior = torch.cat(parts, dim=0) if len(parts) > 1 else parts[0]
 
     # Bottom plane samples (traction-free in box mode; Dirichlet handled on side faces to match FEA).
     n_bot = int(config.N_BOTTOM)
-    params_bot = _sample_layer_params(n_bot)
-    xb = _uniform(n_bot, 0.0, float(config.Lx))
-    yb = _uniform(n_bot, 0.0, float(config.Ly))
-    zb = torch.zeros(n_bot, 1)
-    bottom = _assemble_input(torch.cat([xb, yb, zb], dim=1), params_bot)
+    if prev_data is not None and residuals is not None and "bottom" in residuals:
+        bottom = _resample_region(prev_data["bottom"], residuals["bottom"].to(dtype=torch.float32), n_bot, region="bottom")
+    else:
+        params_bot = _sample_layer_params(n_bot)
+        xb = _uniform(n_bot, 0.0, float(config.Lx))
+        yb = _uniform(n_bot, 0.0, float(config.Ly))
+        zb = torch.zeros(n_bot, 1)
+        bottom = _assemble_input(torch.cat([xb, yb, zb], dim=1), params_bot)
 
     # Top surface (split into load patch and free)
     n_load = int(config.N_TOP_LOAD)
-    params_load = _sample_layer_params(n_load)
-    T_load = _total_thickness_from_params(params_load)
-    xl = _uniform(n_load, float(config.LOAD_PATCH_X[0]), float(config.LOAD_PATCH_X[1]))
-    yl = _uniform(n_load, float(config.LOAD_PATCH_Y[0]), float(config.LOAD_PATCH_Y[1]))
-    zl = T_load
-    top_load = _assemble_input(torch.cat([xl, yl, zl], dim=1), params_load)
+    if prev_data is not None and residuals is not None and "top_load" in residuals:
+        top_load = _resample_region(prev_data["top_load"], residuals["top_load"].to(dtype=torch.float32), n_load, region="top_load")
+        top_load[:, 0:1] = torch.clamp(top_load[:, 0:1], float(config.LOAD_PATCH_X[0]), float(config.LOAD_PATCH_X[1]))
+        top_load[:, 1:2] = torch.clamp(top_load[:, 1:2], float(config.LOAD_PATCH_Y[0]), float(config.LOAD_PATCH_Y[1]))
+    else:
+        params_load = _sample_layer_params(n_load)
+        T_load = _total_thickness_from_params(params_load)
+        xl, yl = _sample_xy_on_patch_biased(n_load)
+        zl = T_load
+        top_load = _assemble_input(torch.cat([xl, yl, zl], dim=1), params_load)
 
     n_top_free = int(config.N_TOP_FREE)
-    params_tf = _sample_layer_params(n_top_free)
-    T_tf = _total_thickness_from_params(params_tf)
-    # Sample full top and reject points inside patch.
-    xt = _uniform(n_top_free * 2, 0.0, float(config.Lx))
-    yt = _uniform(n_top_free * 2, 0.0, float(config.Ly))
-    in_patch = (
-        (xt[:, 0] >= float(config.LOAD_PATCH_X[0]))
-        & (xt[:, 0] <= float(config.LOAD_PATCH_X[1]))
-        & (yt[:, 0] >= float(config.LOAD_PATCH_Y[0]))
-        & (yt[:, 0] <= float(config.LOAD_PATCH_Y[1]))
-    )
-    xt = xt[~in_patch][:n_top_free]
-    yt = yt[~in_patch][:n_top_free]
-    if xt.shape[0] < n_top_free:
-        xt = _uniform(n_top_free, 0.0, float(config.Lx))
-        yt = _uniform(n_top_free, 0.0, float(config.Ly))
-    zt = T_tf
-    top_free = _assemble_input(torch.cat([xt, yt, zt], dim=1), params_tf)
+    if prev_data is not None and residuals is not None and "top_free" in residuals:
+        top_free = _resample_region(prev_data["top_free"], residuals["top_free"].to(dtype=torch.float32), n_top_free, region="top_free")
+        xt = top_free[:, 0:1]
+        yt = top_free[:, 1:2]
+        in_patch = (
+            (xt[:, 0] >= float(config.LOAD_PATCH_X[0]))
+            & (xt[:, 0] <= float(config.LOAD_PATCH_X[1]))
+            & (yt[:, 0] >= float(config.LOAD_PATCH_Y[0]))
+            & (yt[:, 0] <= float(config.LOAD_PATCH_Y[1]))
+        )
+        if bool(in_patch.any()):
+            replace_n = int(in_patch.sum().item())
+            params_tf = _sample_layer_params(replace_n)
+            T_tf = _total_thickness_from_params(params_tf)
+            xr = _uniform(replace_n * 2, 0.0, float(config.Lx))
+            yr = _uniform(replace_n * 2, 0.0, float(config.Ly))
+            in_patch_r = (
+                (xr[:, 0] >= float(config.LOAD_PATCH_X[0]))
+                & (xr[:, 0] <= float(config.LOAD_PATCH_X[1]))
+                & (yr[:, 0] >= float(config.LOAD_PATCH_Y[0]))
+                & (yr[:, 0] <= float(config.LOAD_PATCH_Y[1]))
+            )
+            xr = xr[~in_patch_r][:replace_n]
+            yr = yr[~in_patch_r][:replace_n]
+            if xr.shape[0] < replace_n:
+                xr = _uniform(replace_n, 0.0, float(config.Lx))
+                yr = _uniform(replace_n, 0.0, float(config.Ly))
+            zr = T_tf
+            repl = _assemble_input(torch.cat([xr, yr, zr], dim=1), params_tf)
+            top_free[in_patch] = repl
+    else:
+        params_tf = _sample_layer_params(n_top_free)
+        T_tf = _total_thickness_from_params(params_tf)
+        ring_frac = float(getattr(config, "TOP_FREE_RING_FRACTION", 0.0))
+        ring_frac = max(0.0, min(ring_frac, 1.0))
+        n_ring = int(round(n_top_free * ring_frac))
+        n_uni = max(0, n_top_free - n_ring)
+
+        xt_parts, yt_parts = [], []
+        if n_ring > 0:
+            xr, yr = _sample_xy_top_free_ring(n_ring)
+            xt_parts.append(xr)
+            yt_parts.append(yr)
+        if n_uni > 0:
+            xt = _uniform(n_uni * 2, 0.0, float(config.Lx))
+            yt = _uniform(n_uni * 2, 0.0, float(config.Ly))
+            in_patch = (
+                (xt[:, 0] >= float(config.LOAD_PATCH_X[0]))
+                & (xt[:, 0] <= float(config.LOAD_PATCH_X[1]))
+                & (yt[:, 0] >= float(config.LOAD_PATCH_Y[0]))
+                & (yt[:, 0] <= float(config.LOAD_PATCH_Y[1]))
+            )
+            xt = xt[~in_patch][:n_uni]
+            yt = yt[~in_patch][:n_uni]
+            if xt.shape[0] < n_uni:
+                xt = _uniform(n_uni, 0.0, float(config.Lx))
+                yt = _uniform(n_uni, 0.0, float(config.Ly))
+            xt_parts.append(xt)
+            yt_parts.append(yt)
+
+        xt_all = torch.cat(xt_parts, dim=0) if len(xt_parts) > 1 else xt_parts[0]
+        yt_all = torch.cat(yt_parts, dim=0) if len(yt_parts) > 1 else yt_parts[0]
+        zt = T_tf
+        top_free = _assemble_input(torch.cat([xt_all, yt_all, zt], dim=1), params_tf)
 
     # Side walls: either clamped (Dirichlet) to match FEA, or traction-free.
     n_side = int(config.N_SIDES)
@@ -747,6 +1005,14 @@ def get_data(prev_data=None, residuals=None):
     side_all_normal = torch.cat(side_normals, dim=0)[:n_side].to(dtype=torch.float32)
 
     clamp_sides = bool(getattr(config, "BOX_CLAMP_SIDES", True))
+    if prev_data is not None and residuals is not None:
+        if clamp_sides and "sides" in residuals and "sides" in prev_data:
+            side_all = _resample_region(prev_data["sides"][0], residuals["sides"].to(dtype=torch.float32), n_side, region="sides")
+            side_all_normal = _side_normals_from_points(side_all)
+        if (not clamp_sides) and "side_free" in residuals and "side_free" in prev_data:
+            side_all = _resample_region(prev_data["side_free"], residuals["side_free"].to(dtype=torch.float32), n_side, region="sides")
+            side_all_normal = _side_normals_from_points(side_all)
+
     if clamp_sides:
         sides = [side_all]
         side_free = side_all[:0]
@@ -765,6 +1031,28 @@ def get_data(prev_data=None, residuals=None):
     intf1 = _assemble_input(torch.cat([xi, yi, z1], dim=1), params_i)
     intf2 = _assemble_input(torch.cat([xi, yi, z2], dim=1), params_i)
 
+    # Near-interface band samples (for displacement continuity smoothing).
+    n_band = int(getattr(config, "N_INTERFACE_BAND", 0))
+    if n_band > 0:
+        params_b = _sample_layer_params(n_band)
+        T_b = _total_thickness_from_params(params_b)
+        z1b, z2b = _interfaces_from_params(params_b)
+        band_frac = float(getattr(config, "INTERFACE_BAND_FRAC", 0.05))
+        band = (band_frac * T_b).clamp_min(1e-6)
+        delta1 = (torch.rand(n_band, 1) - 0.5) * 2.0 * band
+        delta2 = (torch.rand(n_band, 1) - 0.5) * 2.0 * band
+        zb1 = torch.clamp(z1b + delta1, min=0.0)
+        zb1 = torch.minimum(zb1, T_b)
+        zb2 = torch.clamp(z2b + delta2, min=0.0)
+        zb2 = torch.minimum(zb2, T_b)
+        xb = _uniform(n_band, 0.0, float(config.Lx))
+        yb = _uniform(n_band, 0.0, float(config.Ly))
+        intf1_band = _assemble_input(torch.cat([xb, yb, zb1], dim=1), params_b)
+        intf2_band = _assemble_input(torch.cat([xb, yb, zb2], dim=1), params_b)
+        interfaces_band = [intf1_band, intf2_band]
+    else:
+        interfaces_band = None
+
     out = {
         "interior": [interior],
         "bottom": bottom,
@@ -776,6 +1064,8 @@ def get_data(prev_data=None, residuals=None):
         "side_free_normal": side_free_normal.to(dtype=torch.float32),
         "interfaces": [intf1, intf2],
     }
+    if interfaces_band is not None:
+        out["interfaces_band"] = interfaces_band
     if sides is not None:
         out["sides"] = sides
     return out

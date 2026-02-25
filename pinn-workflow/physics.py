@@ -29,6 +29,51 @@ def _select_E_local(x: torch.Tensor) -> torch.Tensor:
     E = torch.where(idx.view(-1, 1) == 0, E1, torch.where(idx.view(-1, 1) == 1, E2, E3))
     return torch.clamp(E, min=1e-8)
 
+def _E_eff(x: torch.Tensor) -> torch.Tensor:
+    """
+    Thickness-weighted effective modulus (N,1) for global decode.
+    x layout: [x,y,z,E1,t1,E2,t2,E3,t3,r,mu,v0]
+    """
+    E1 = torch.clamp(x[:, 3:4], min=1e-8)
+    t1 = torch.clamp(x[:, 4:5], min=1e-8)
+    E2 = torch.clamp(x[:, 5:6], min=1e-8)
+    t2 = torch.clamp(x[:, 6:7], min=1e-8)
+    E3 = torch.clamp(x[:, 7:8], min=1e-8)
+    t3 = torch.clamp(x[:, 8:9], min=1e-8)
+    T = (t1 + t2 + t3).clamp_min(1e-8)
+    return (E1 * t1 + E2 * t2 + E3 * t3) / T
+
+def decode_u(v: torch.Tensor, x: torch.Tensor, *, E_override: torch.Tensor | None = None) -> torch.Tensor:
+    """
+    Convert network output v to displacement u according to config.DISPLACEMENT_DECODE_MODE.
+    - none: u=v
+    - local: u=v/E_local (or E_override)
+    - global: u=v/E_eff (or E_override)
+    """
+    mode = str(getattr(config, "DISPLACEMENT_DECODE_MODE", "none")).lower().strip()
+    if mode in {"none", "identity", "u"}:
+        u = v
+    elif mode in {"global", "eff", "e_eff", "avg"}:
+        E = E_override if E_override is not None else _E_eff(x)
+        u = v / torch.clamp(E, min=1e-8)
+    else:
+        E = E_override if E_override is not None else _select_E_local(x)
+        u = v / torch.clamp(E, min=1e-8)
+
+    # Optional: enforce box-mode clamped sides (x/y min/max) by construction to eliminate
+    # rigid-body drift that can satisfy traction BCs with near-zero strain energy.
+    if bool(getattr(config, "HARD_CLAMP_SIDES", False)):
+        if str(getattr(config, "GEOMETRY_MODE", "box")).lower() == "box" and bool(getattr(config, "BOX_CLAMP_SIDES", False)):
+            Lx = float(getattr(config, "Lx", 1.0))
+            Ly = float(getattr(config, "Ly", 1.0))
+            x0 = torch.clamp(x[:, 0:1], 0.0, Lx)
+            y0 = torch.clamp(x[:, 1:2], 0.0, Ly)
+            bx = (x0 * (Lx - x0)) / max(1e-12, 0.25 * Lx * Lx)
+            by = (y0 * (Ly - y0)) / max(1e-12, 0.25 * Ly * Ly)
+            b = bx * by
+            u = u * b
+    return u
+
 
 def _total_thickness(x: torch.Tensor) -> torch.Tensor:
     t1 = torch.clamp(x[:, 4:5], min=1e-4)
@@ -180,10 +225,7 @@ def compute_loss(model, data, device, weights=None):
     losses['impact_invariance'] = impact_invariance_loss
     total_loss += weights.get('impact_invariance', 0.0) * impact_invariance_loss
 
-    # Predict displacement u = v / E to handle parameter range.
-    # NOTE: Thickness compliance scaling (H/t)^alpha is applied at evaluation/plot time,
-    # not inside the PDE/traction losses, because the traction BC can otherwise cancel it.
-    u = v_int / E_local
+    u = decode_u(v_int, x_int)
     
     grad_u = gradient(u, x_int)
     eps = strain(grad_u)
@@ -207,18 +249,18 @@ def compute_loss(model, data, device, weights=None):
         internal_energy = energy_density.mean() * (config.Lx * config.Ly * t_local.mean())
     
     # --- 2. Dirichlet BCs (Clamp) ---
+    w_clamp = weights.get('clamp', weights.get('bc', 0.0))
     # Box mode (FEA parity): clamp side walls via data["sides"].
     # CAD mode: clamp bottom cap via data["bottom_clamp"].
     if "sides" in data:
         x_clamp = data["sides"][0].to(device)
     else:
         x_clamp = data["bottom_clamp"].to(device)
-    E_clamp = _select_E_local(x_clamp)
     v_clamp = model(x_clamp)
-    u_clamp = v_clamp / E_clamp
+    u_clamp = decode_u(v_clamp, x_clamp)
     bc_loss = torch.mean(u_clamp**2)
     losses['bc_sides'] = bc_loss  # kept key name for compatibility with existing logs
-    total_loss += weights['bc'] * bc_loss
+    total_loss += w_clamp * bc_loss
     
     # --- 3. Traction BCs (Top & Bottom) ---
     # Top Loaded
@@ -231,7 +273,7 @@ def compute_loss(model, data, device, weights=None):
     mu = mu.unsqueeze(2)
     
     v_top = model(x_top_load)
-    u_top = v_top / E_local_load
+    u_top = decode_u(v_top, x_top_load)
     grad_u_top = gradient(u_top, x_top_load)
     sig_top = stress(strain(grad_u_top), lm, mu)
 
@@ -297,7 +339,12 @@ def compute_loss(model, data, device, weights=None):
         losses['friction_stick'] = friction_stick_loss
         total_loss += weights.get('friction_stick', 0.0) * friction_stick_loss
 
-    loss_load = torch.mean((T - target) ** 2)
+    # Weight by mask so high-pressure regions dominate (helps match the localized indentation seen in FEA).
+    mask_power = float(getattr(config, "LOAD_MASK_LOSS_POWER", 1.0))
+    w = torch.clamp(mask, min=0.0) ** mask_power
+    w = w / (w.mean().clamp_min(1e-8))
+    err2 = torch.sum((T - target) ** 2, dim=1, keepdim=True)
+    loss_load = torch.mean(w * err2)
     losses['load'] = loss_load
     total_loss += weights['load'] * loss_load
     
@@ -316,11 +363,12 @@ def compute_loss(model, data, device, weights=None):
     total_loss += weights['energy'] * energy_loss
     
     # Top Free (traction-free)
+    w_free = weights.get('free', weights.get('bc', 0.0))
     x_top_free = data['top_free'].to(device).detach().clone().requires_grad_(True)
     if x_top_free.shape[0] == 0:
         loss_free = torch.zeros((), device=device)
         losses['free_top'] = loss_free
-        total_loss += weights['bc'] * loss_free
+        total_loss += w_free * loss_free
     else:
         E_local_free = _select_E_local(x_top_free)
         lm_free = (E_local_free * nu) / ((1 + nu) * (1 - 2 * nu))
@@ -329,7 +377,7 @@ def compute_loss(model, data, device, weights=None):
         mu_free = mu_free.unsqueeze(2)
         
         v_top_free = model(x_top_free)
-        u_top_free = v_top_free / E_local_free
+        u_top_free = decode_u(v_top_free, x_top_free)
         grad_u_free = gradient(u_top_free, x_top_free)
         sig_top_free = stress(strain(grad_u_free), lm_free, mu_free)
         n_free = data.get("top_free_normal", None)
@@ -341,7 +389,7 @@ def compute_loss(model, data, device, weights=None):
         T_free = _traction_from_stress(sig_top_free, n_free)
         loss_free = torch.mean(T_free ** 2)
         losses['free_top'] = loss_free
-        total_loss += weights['bc'] * loss_free
+        total_loss += w_free * loss_free
     
     # Side walls (traction-free)
     x_side_free = data['side_free'].to(device).detach().clone().requires_grad_(True)
@@ -359,13 +407,13 @@ def compute_loss(model, data, device, weights=None):
         lm_side = lm_side.unsqueeze(2)
         mu_side = mu_side.unsqueeze(2)
         v_side = model(x_side_free)
-        u_side = v_side / E_side
+        u_side = decode_u(v_side, x_side_free)
         grad_u_side = gradient(u_side, x_side_free)
         sig_side = stress(strain(grad_u_side), lm_side, mu_side)
         T_side = _traction_from_stress(sig_side, n_side)
         loss_side = torch.mean(T_side ** 2)
     losses["free_side"] = loss_side
-    total_loss += weights['bc'] * loss_side
+    total_loss += w_free * loss_side
 
     # Bottom (traction-free) in box mode.
     if "bottom" in data:
@@ -379,7 +427,7 @@ def compute_loss(model, data, device, weights=None):
             lm_bot = lm_bot.unsqueeze(2)
             mu_bot = mu_bot.unsqueeze(2)
             v_bot = model(x_bot)
-            u_bot = v_bot / E_bot
+            u_bot = decode_u(v_bot, x_bot)
             grad_u_bot = gradient(u_bot, x_bot)
             sig_bot = stress(strain(grad_u_bot), lm_bot, mu_bot)
             # outward normal for z=0 plane is -z_hat
@@ -387,7 +435,7 @@ def compute_loss(model, data, device, weights=None):
             T_bot = _traction_from_stress(sig_bot, n_bot)
             loss_bot = torch.mean(T_bot ** 2)
         losses["free_bot"] = loss_bot
-        total_loss += weights["bc"] * loss_bot
+        total_loss += w_free * loss_bot
     else:
         # CAD mode: bottom is clamped, so traction-free is skipped.
         loss_bot = torch.zeros((), device=device)
@@ -406,8 +454,8 @@ def compute_loss(model, data, device, weights=None):
 
             va = model(x_intf, layer_idx=layer_a)
             vb = model(x_intf, layer_idx=layer_b)
-            ua = va / Ea
-            ub = vb / Eb
+            ua = decode_u(va, x_intf, E_override=Ea)
+            ub = decode_u(vb, x_intf, E_override=Eb)
             interface_u_losses.append(torch.mean((ua - ub) ** 2))
 
             # traction continuity
@@ -440,6 +488,33 @@ def compute_loss(model, data, device, weights=None):
     losses["interface_t"] = interface_t
     total_loss += weights.get("interface_u", 0.0) * interface_u
     total_loss += weights.get("interface_t", 0.0) * interface_t
+
+    # Optional: near-interface displacement continuity band (smooths kinks from hard routing).
+    interfaces_band = data.get("interfaces_band", None)
+    if interfaces_band is not None and len(interfaces_band) >= 2:
+        band_losses = []
+        band_grad_losses = []
+        for k, (layer_a, layer_b) in enumerate([(0, 1), (1, 2)]):
+            x_band = interfaces_band[k].to(device).detach().clone().requires_grad_(True)
+            va = model(x_band, layer_idx=layer_a)
+            vb = model(x_band, layer_idx=layer_b)
+            band_losses.append(torch.mean((va - vb) ** 2))
+
+            # Match through-thickness gradients near the interface (reduces visible kinks in XZ slices).
+            ga = gradient(va, x_band)  # (N,3,3)
+            gb = gradient(vb, x_band)
+            da_dz = ga[:, :, 2]
+            db_dz = gb[:, :, 2]
+            band_grad_losses.append(torch.mean((da_dz - db_dz) ** 2))
+        interface_band_u = torch.stack(band_losses).mean()
+        interface_band_grad = torch.stack(band_grad_losses).mean()
+    else:
+        interface_band_u = torch.zeros((), device=device)
+        interface_band_grad = torch.zeros((), device=device)
+    losses["interface_band_u"] = interface_band_u
+    total_loss += weights.get("interface_band_u", 0.0) * interface_band_u
+    losses["interface_band_grad"] = interface_band_grad
+    total_loss += weights.get("interface_band_grad", 0.0) * interface_band_grad
     
     # --- 4. Supervised Data Loss (Hybrid/Parametric) ---
     if 'x_data' in data and 'u_data' in data:
@@ -478,7 +553,7 @@ def compute_residuals(model, data, device):
     mu = mu.unsqueeze(2)
     
     v_int = model(x_int)
-    u = v_int / E_local
+    u = decode_u(v_int, x_int)
     grad_u = gradient(u, x_int)
     eps = strain(grad_u)
     sig = stress(eps, lm, mu)
@@ -495,9 +570,8 @@ def compute_residuals(model, data, device):
     else:
         x_clamp = data["bottom_clamp"].to(device)
         key = "bottom_clamp"
-    E_clamp = _select_E_local(x_clamp)
     v_clamp = model(x_clamp)
-    u_clamp = v_clamp / E_clamp
+    u_clamp = decode_u(v_clamp, x_clamp)
     bc_residual = torch.sqrt(torch.sum(u_clamp**2, dim=1))
     residuals[key] = bc_residual.cpu()
     
@@ -511,7 +585,7 @@ def compute_residuals(model, data, device):
     mu = mu.unsqueeze(2)
     
     v_top = model(x_top_load)
-    u_top = v_top / E_local_load
+    u_top = decode_u(v_top, x_top_load)
     grad_u_top = gradient(u_top, x_top_load)
     sig_top = stress(strain(grad_u_top), lm, mu)
     n_top = data.get("top_load_normal", None)
@@ -549,7 +623,7 @@ def compute_residuals(model, data, device):
         mu_free = mu_free.unsqueeze(2)
         
         v_top_free = model(x_top_free)
-        u_top_free = v_top_free / E_local_free
+        u_top_free = decode_u(v_top_free, x_top_free)
         grad_u_free = gradient(u_top_free, x_top_free)
         sig_top_free = stress(strain(grad_u_free), lm_free, mu_free)
         n_free = data.get("top_free_normal", None)
@@ -577,7 +651,7 @@ def compute_residuals(model, data, device):
         lm_side = lm_side.unsqueeze(2)
         mu_side = mu_side.unsqueeze(2)
         v_side = model(x_side)
-        u_side = v_side / E_side
+        u_side = decode_u(v_side, x_side)
         grad_u_side = gradient(u_side, x_side)
         sig_side = stress(strain(grad_u_side), lm_side, mu_side)
         T_side = _traction_from_stress(sig_side, n_side)
@@ -596,7 +670,7 @@ def compute_residuals(model, data, device):
             lm_bot = lm_bot.unsqueeze(2)
             mu_bot = mu_bot.unsqueeze(2)
             v_bot = model(x_bot)
-            u_bot = v_bot / E_bot
+            u_bot = decode_u(v_bot, x_bot)
             grad_u_bot = gradient(u_bot, x_bot)
             sig_bot = stress(strain(grad_u_bot), lm_bot, mu_bot)
             n_bot = torch.tensor([[0.0, 0.0, -1.0]], device=device, dtype=x_bot.dtype).repeat(x_bot.shape[0], 1)
