@@ -74,6 +74,12 @@ def main():
         default=None,
         help="If set, overrides pinn_config.HARD_CLAMP_SIDES for evaluation (0/1).",
     )
+    parser.add_argument(
+        "--hard_side_bc",
+        type=int,
+        default=None,
+        help="If set, overrides pinn_config.USE_HARD_SIDE_BC for evaluation (0/1).",
+    )
 
     # Model architecture (optional; inferred if omitted)
     parser.add_argument("--layers", type=int, default=None)
@@ -137,6 +143,8 @@ def main():
     config.NEURONS = int(neurons)
     if args.hard_clamp_sides is not None:
         config.HARD_CLAMP_SIDES = bool(int(args.hard_clamp_sides))
+    if args.hard_side_bc is not None:
+        config.USE_HARD_SIDE_BC = bool(int(args.hard_side_bc))
 
     pinn = model.MultiLayerPINN().to(device)
     pinn.load_state_dict(sd, strict=True)

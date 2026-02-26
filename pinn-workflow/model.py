@@ -110,6 +110,19 @@ class LayerNet(nn.Module):
         )
         u_raw = self.net(x_scaled)
 
+        # impact_params-style hard clamp-by-construction (box mode only):
+        # multiply the displacement by a smooth mask that is 0 on x/y side faces.
+        if bool(getattr(config, "USE_HARD_SIDE_BC", False)):
+            if str(getattr(config, "GEOMETRY_MODE", "box")).lower() == "box" and bool(getattr(config, "BOX_CLAMP_SIDES", False)):
+                Lx = float(getattr(config, "Lx", 1.0))
+                Ly = float(getattr(config, "Ly", 1.0))
+                x0 = torch.clamp(x_coord, 0.0, Lx)
+                y0 = torch.clamp(y_coord, 0.0, Ly)
+                bx = (x0 * (Lx - x0)) / max(1e-12, 0.25 * Lx * Lx)
+                by = (y0 * (Ly - y0)) / max(1e-12, 0.25 * Ly * Ly)
+                mask = bx * by
+                u_raw = u_raw * mask
+
         return u_raw
 
 class MultiLayerPINN(nn.Module):
@@ -180,5 +193,4 @@ class MultiLayerPINN(nn.Module):
         return self.forward(x)
 
     def set_hard_bc(self, use_hard):
-        # Hard BC masking is intentionally disabled for the 3-layer laminate model.
-        _ = use_hard
+        config.USE_HARD_SIDE_BC = bool(use_hard)
