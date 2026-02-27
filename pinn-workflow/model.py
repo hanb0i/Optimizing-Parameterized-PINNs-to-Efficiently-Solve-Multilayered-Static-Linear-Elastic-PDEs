@@ -24,7 +24,8 @@ class LayerNet(nn.Module):
             layers.append(nn.Linear(hidden_units, hidden_units))
             layers.append(activation)
             
-        layers.append(nn.Linear(hidden_units, 3))
+        out_dim = 9 if bool(getattr(config, "USE_MIXED_FORMULATION", False)) else 3
+        layers.append(nn.Linear(hidden_units, out_dim))
         self.net = nn.Sequential(*layers)
         self._init_weights()
         
@@ -108,7 +109,7 @@ class LayerNet(nn.Module):
             ],
             dim=1,
         )
-        u_raw = self.net(x_scaled)
+        y_raw = self.net(x_scaled)
 
         # impact_params-style hard clamp-by-construction (box mode only):
         # multiply the displacement by a smooth mask that is 0 on x/y side faces.
@@ -121,9 +122,18 @@ class LayerNet(nn.Module):
                 bx = (x0 * (Lx - x0)) / max(1e-12, 0.25 * Lx * Lx)
                 by = (y0 * (Ly - y0)) / max(1e-12, 0.25 * Ly * Ly)
                 mask = bx * by
-                u_raw = u_raw * mask
+                power = float(getattr(config, "HARD_SIDE_BC_POWER", 1.0))
+                if power <= 0.0:
+                    mask_eff = torch.ones_like(mask)
+                else:
+                    mask_eff = mask.clamp_min(1e-12) ** power
+                if y_raw.shape[1] == 3:
+                    y_raw = y_raw * mask_eff
+                else:
+                    u_part = y_raw[:, 0:3] * mask_eff
+                    y_raw = torch.cat([u_part, y_raw[:, 3:]], dim=1)
 
-        return u_raw
+        return y_raw
 
 class MultiLayerPINN(nn.Module):
     def __init__(self):
@@ -163,7 +173,8 @@ class MultiLayerPINN(nn.Module):
         gating = str(getattr(config, "LAYER_GATING", "hard")).lower().strip()
         if gating == "hard":
             idx = self._layer_idx(x)
-            out = torch.empty((x.shape[0], 3), device=x.device, dtype=x.dtype)
+            out_dim = 9 if bool(getattr(config, "USE_MIXED_FORMULATION", False)) else 3
+            out = torch.empty((x.shape[0], out_dim), device=x.device, dtype=x.dtype)
             for li in (0, 1, 2):
                 m = idx == li
                 if torch.any(m):
@@ -184,10 +195,10 @@ class MultiLayerPINN(nn.Module):
         ws = (w0 + w1 + w2).clamp_min(1e-8)
         w0, w1, w2 = w0 / ws, w1 / ws, w2 / ws
 
-        u0 = self.layers[0](x)
-        u1 = self.layers[1](x)
-        u2 = self.layers[2](x)
-        return w0 * u0 + w1 * u1 + w2 * u2
+        y0 = self.layers[0](x)
+        y1 = self.layers[1](x)
+        y2 = self.layers[2](x)
+        return w0 * y0 + w1 * y1 + w2 * y2
 
     def predict_all(self, x):
         return self.forward(x)

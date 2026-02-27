@@ -71,18 +71,18 @@ PARAM_DIM = len(PARAM_NAMES)
 
 # When matching a specific FEA case (physics-only), it can help to train with a single
 # fixed parameter vector so the collocation set represents one consistent geometry/material.
-TRAIN_FIXED_PARAMS = False
+TRAIN_FIXED_PARAMS = True
 TRAIN_FIXED_E = 1.0
 TRAIN_FIXED_TOTAL_THICKNESS = H
 
 # When TRAIN_FIXED_PARAMS=True, you can optionally pin per-layer parameters.
 # If left as None, it falls back to TRAIN_FIXED_E and equal thickness splits.
-TRAIN_FIXED_E1 = None
-TRAIN_FIXED_E2 = None
-TRAIN_FIXED_E3 = None
-TRAIN_FIXED_T1 = None
-TRAIN_FIXED_T2 = None
-TRAIN_FIXED_T3 = None
+TRAIN_FIXED_E1 = 1.0
+TRAIN_FIXED_E2 = 5.0
+TRAIN_FIXED_E3 = 10.0
+TRAIN_FIXED_T1 = H / 3.0
+TRAIN_FIXED_T2 = H / 3.0
+TRAIN_FIXED_T3 = H / 3.0
 
 # Optional: explicit E sweep values for `verify_parametric_pinn.py`.
 # If not set, it uses `np.linspace(E_RANGE[0], E_RANGE[1], PINN_VERIFY_E_STEPS)`.
@@ -115,6 +115,10 @@ THICKNESS_COMPLIANCE_ALPHA = 1.234
 # - "none":  u = v (recommended for layered FEM parity)
 DISPLACEMENT_DECODE_MODE = "none"
 
+# When True, use a mixed (first-order) formulation that predicts both displacement and stress:
+# output = [u_x,u_y,u_z, s_xx,s_yy,s_zz,s_xy,s_xz,s_yz]
+USE_MIXED_FORMULATION = False
+
 # Residual-based resampling sharpness (higher => focus more on worst points).
 RESAMPLE_RESIDUAL_POWER = 1.0
 
@@ -129,7 +133,8 @@ Lame_Params = [get_lame_params(e, n) for e, n in zip(E_vals, nu_vals)]
 p0 = 1.0 # Load magnitude
 
 # Optional path to an FEA solution file used for evaluation/logging (not for supervision).
-FEA_NPY_PATH = "fea_solution.npy"
+# Defaults set to the layered case used for `layered_best_stage3g_top.png`.
+FEA_NPY_PATH = "fea_solution_layered_E1_1_E2_5_E3_10_equal.npy"
 
 # --- Unit-consistent loss scaling ---
 # div(sigma) has units of stress/length; scale by a characteristic length.
@@ -138,7 +143,22 @@ PDE_LENGTH_SCALE = H
 # --- Boundary condition handling ---
 # Use hard mask early for shape, then switch to soft BCs for magnitude.
 USE_HARD_SIDE_BC = True
-HARD_BC_EPOCHS = 1000
+# Stage3g ran with the hard clamp mask effectively on throughout.
+HARD_BC_EPOCHS = 1
+# How to schedule the (impact_params-style) hard side clamp mask during training:
+# - "soft_to_hard": start soft, then ramp to hard over HARD_BC_EPOCHS (impact_params-like)
+# - "hard_to_soft": start hard, then ramp to soft over HARD_BC_EPOCHS
+HARD_BC_SCHEDULE = "soft_to_hard"
+# Strength of the hard side BC mask in `model.LayerNet`:
+# The displacement is multiplied by `mask ** HARD_SIDE_BC_POWER`, where mask∈[0,1],
+# mask=0 on x/y side faces and mask≈1 near the center.
+# - power=0.0 => no clamp effect (mask^0=1)
+# - power=1.0 => full clamp mask (default)
+# During training, this value is treated as the *current* power; the schedule ramps between
+# HARD_SIDE_BC_POWER_START and HARD_SIDE_BC_POWER_END.
+HARD_SIDE_BC_POWER = 1.0
+HARD_SIDE_BC_POWER_START = 1.0
+HARD_SIDE_BC_POWER_END = 1.0
 
 # Box-mode boundary conditions.
 # The FEA solver in `fea-workflow/solver/fem_solver.py` clamps x/y edges (Dirichlet).
@@ -183,19 +203,25 @@ PATCH_FOCUS_EPOCH = None  # e.g. 200
 PATCH_FOCUS_MASK_SAMPLING_POWER = 2.0
 PATCH_FOCUS_MASK_LOSS_POWER = 2.0
 
+# Optional schedule for the patch u_z anchor (depth calibration).
+# After PATCH_UZ_SUP_DECAY_EPOCH, multiply the weight by PATCH_UZ_SUP_DECAY_FACTOR.
+PATCH_UZ_SUP_DECAY_EPOCH = None  # e.g. 2000
+PATCH_UZ_SUP_DECAY_FACTOR = 0.1
+
 # --- Network Architecture ---
 LAYERS = 4
 NEURONS = 64
 
 # --- Training Hyperparameters ---
-LEARNING_RATE = 1e-3
-EPOCHS_ADAM = 2000
-EPOCHS_LBFGS = 0
+LEARNING_RATE = 2e-4
+EPOCHS_ADAM = 10
+EPOCHS_LBFGS = 80
 # SOAP optimizer
 SOAP_PRECONDITION_FREQUENCY = 10 # Lower = more frequent curvature updates; higher = cheaper but less responsive
 #Plot Physical Residuals Every N Epochs every 100 epochs. 
 WEIGHTS = {
-    'pde': 5.0,    # Reverted to 5.0 (Optimal: 0.4% Error at E=1, 10% at E=10)
+    'pde': 6.0,    # Equilibrium (div sigma); strong-form in displacement-only mode
+    'constitutive': 1.0,  # Mixed-form only: enforce sigma = C:epsilon(u)
     'bc': 0.7,      # Slightly softer sides so load can gather more budget
     # Optional split of boundary weights:
     # - clamp: Dirichlet enforcement on clamped faces (box sides or CAD bottom cap)
@@ -203,8 +229,8 @@ WEIGHTS = {
     # If omitted, both fall back to 'bc'.
     # 'clamp': 0.7,
     # 'free': 0.7,
-    'load': 5.0, # Optimal load weight
-    'energy': 0.63, # Per user request
+    'load': 10.0, # Stage3g: higher load emphasis
+    'energy': 1.0, # Stage3g: potential energy objective weight
     'impact_invariance': 0.0,  # Set >0 only for neutral-parameter mode
     'impact_contact': 0.0002,   # Reduced to preserve FEA parity in no-supervision mode
     'friction_coulomb': 0.001,  # Reduced to preserve FEA parity in no-supervision mode
@@ -213,18 +239,26 @@ WEIGHTS = {
     'interface_t': 0.5,
     'interface_band_u': 1.0,
     'interface_band_grad': 0.5,
+    'patch_uz_sup': 0.0,  # optional tiny depth anchor (disabled by default)
     'data': 1.0
 }
 
 # Loss weight ramp: load-first to raise displacement while preserving shape.
 WEIGHT_RAMP_EPOCHS = 0
+
+# Energy objective (physics-based):
+# - "potential": minimize total potential energy Π = U - W_ext (recommended for static elasticity)
+# - "balance":   penalize (2U - W_ext)^2 (energy theorem for linear elasticity)
+ENERGY_OBJECTIVE = "potential"
 LOAD_WEIGHT_START = WEIGHTS['load']
 PDE_WEIGHT_START = WEIGHTS['pde']
 ENERGY_WEIGHT_START = WEIGHTS['energy']
 # Force soft side boundary conditions from the beginning.
-FORCE_SOFT_SIDE_BC_FROM_START = True
-SOFT_MODE_PDE_WEIGHT_SCALE = 3.0
-SOFT_MODE_LOAD_WEIGHT_SCALE = 1.0
+FORCE_SOFT_SIDE_BC_FROM_START = False
+# In the early "soft clamp" phase we bias toward matching the indentation magnitude.
+SOFT_MODE_LOAD_WEIGHT_SCALE = 2.0
+# Reduce PDE emphasis during the soft phase so the model can increase deflection before locking shape.
+SOFT_MODE_PDE_WEIGHT_SCALE = 0.5
 # Sampling
 N_INTERIOR = 15000 # Per layer
 N_SIDES = 2000  # Clamped side faces

@@ -69,6 +69,11 @@ def main():
         help="Output prefix for images (e.g., comparison_latest)",
     )
     parser.add_argument(
+        "--no_plots",
+        action="store_true",
+        help="If set, skip writing PNG plots (metrics only).",
+    )
+    parser.add_argument(
         "--hard_clamp_sides",
         type=int,
         default=None,
@@ -144,7 +149,13 @@ def main():
     if args.hard_clamp_sides is not None:
         config.HARD_CLAMP_SIDES = bool(int(args.hard_clamp_sides))
     if args.hard_side_bc is not None:
-        config.USE_HARD_SIDE_BC = bool(int(args.hard_side_bc))
+        enable = bool(int(args.hard_side_bc))
+        config.USE_HARD_SIDE_BC = enable
+        # When hard-side BC is enabled for eval, default to the fully-hard mask (power=1).
+        if enable:
+            config.HARD_SIDE_BC_POWER = float(getattr(config, "HARD_SIDE_BC_POWER_END", getattr(config, "HARD_SIDE_BC_POWER", 1.0))) or 1.0
+        else:
+            config.HARD_SIDE_BC_POWER = 0.0
 
     pinn = model.MultiLayerPINN().to(device)
     pinn.load_state_dict(sd, strict=True)
@@ -170,6 +181,13 @@ def main():
     u_z_pinn_top = U_pinn[:, :, -1, 2]
     abs_diff = np.abs(u_z_fea_top - u_z_pinn_top)
 
+    # Patch + interior masks (helps diagnose "inside ignored" even when clamps make boundaries look good).
+    x0, x1 = map(float, getattr(config, "LOAD_PATCH_X", [1.0 / 3.0, 2.0 / 3.0]))
+    y0, y1 = map(float, getattr(config, "LOAD_PATCH_Y", [1.0 / 3.0, 2.0 / 3.0]))
+    X0 = X_fea[:, :, 0]
+    Y0 = Y_fea[:, :, 0]
+    patch_top = (X0 >= x0) & (X0 <= x1) & (Y0 >= y0) & (Y0 <= y1)
+
     # --- Full-field metric (matches training/verify_fea_match style) ---
     err_all = (U_pinn - U_fea).reshape(-1, 3)
     mae_all = float(np.mean(np.abs(err_all)))
@@ -184,6 +202,15 @@ def main():
     denom_top = float(np.max(np.abs(u_z_fea_top)))
     mae_top_pct = (mae_top / denom_top) * 100.0 if denom_top > 0 else 0.0
 
+    # Patch-top u_z metric (load region only).
+    if np.any(patch_top):
+        patch_abs = abs_diff[patch_top]
+        mae_patch_top = float(np.mean(patch_abs))
+        mae_patch_top_pct = (mae_patch_top / denom_top) * 100.0 if denom_top > 0 else 0.0
+    else:
+        mae_patch_top = float("nan")
+        mae_patch_top_pct = float("nan")
+
     print("\n==================================================")
     print("Comparison Results (Full Field u):")
     print("==================================================")
@@ -195,10 +222,15 @@ def main():
     print("Top Surface u_z (for reference):")
     print(f"MAE: {mae_top:.6f}")
     print(f"MAE % of max |FEA u_z|: {mae_top_pct:.2f}%")
+    print(f"Patch-top u_z MAE: {mae_patch_top:.6f}")
+    print(f"Patch-top u_z MAE % of max |FEA u_z|: {mae_patch_top_pct:.2f}%")
     print(f"Max Error: {max_err_top:.6f}")
     print(f"Peak Deflection FEA: {u_z_fea_top.min():.6f}")
     print(f"Peak Deflection PINN: {u_z_pinn_top.min():.6f}")
     print("==================================================")
+
+    if args.no_plots:
+        return
 
     vmin = float(min(u_z_fea_top.min(), u_z_pinn_top.min()))
     vmax = float(max(u_z_fea_top.max(), u_z_pinn_top.max()))

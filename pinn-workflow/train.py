@@ -51,15 +51,19 @@ def _apply_env_overrides():
     _maybe_int("PINN_N_BOTTOM", "N_BOTTOM")
     _maybe_int("PINN_N_INTERFACES", "N_INTERFACES")
     _maybe_int("PINN_N_INTERFACE_BAND", "N_INTERFACE_BAND")
+    _maybe_int("PINN_N_INTERIOR_ENERGY", "N_INTERIOR_ENERGY")
+    _maybe_int("PINN_N_TOP_LOAD_ENERGY", "N_TOP_LOAD_ENERGY")
     _maybe_int("PINN_LAYERS", "LAYERS")
     _maybe_int("PINN_NEURONS", "NEURONS")
     _maybe_int("PINN_EPOCHS_ADAM", "EPOCHS_ADAM")
     _maybe_int("PINN_EPOCHS_LBFGS", "EPOCHS_LBFGS")
 
     _maybe_float("PINN_P0", "p0")
+    _maybe_float("PINN_PDE_LENGTH_SCALE", "PDE_LENGTH_SCALE")
     # Weight overrides
     w_map = {
         "PINN_W_PDE": "pde",
+        "PINN_W_CONSTITUTIVE": "constitutive",
         "PINN_W_BC": "bc",
         "PINN_W_CLAMP": "clamp",
         "PINN_W_FREE": "free",
@@ -69,6 +73,7 @@ def _apply_env_overrides():
         "PINN_W_INTERFACE_T": "interface_t",
         "PINN_W_INTERFACE_BAND_U": "interface_band_u",
         "PINN_W_INTERFACE_BAND_GRAD": "interface_band_grad",
+        "PINN_W_PATCH_UZ_SUP": "patch_uz_sup",
     }
     for env_key, w_key in w_map.items():
         val = os.getenv(env_key)
@@ -110,6 +115,13 @@ def _apply_env_overrides():
     _maybe_bool("PINN_FORCE_SOFT_SIDE_BC_FROM_START", "FORCE_SOFT_SIDE_BC_FROM_START")
     _maybe_bool("PINN_USE_HARD_SIDE_BC", "USE_HARD_SIDE_BC")
     _maybe_bool("PINN_USE_EXPLICIT_IMPACT_PHYSICS", "USE_EXPLICIT_IMPACT_PHYSICS")
+    _maybe_bool("PINN_USE_MIXED_FORMULATION", "USE_MIXED_FORMULATION")
+
+    _maybe_str("PINN_HARD_BC_SCHEDULE", "HARD_BC_SCHEDULE")
+    _maybe_str("PINN_ENERGY_OBJECTIVE", "ENERGY_OBJECTIVE")
+    _maybe_float("PINN_HARD_SIDE_BC_POWER", "HARD_SIDE_BC_POWER")
+    _maybe_float("PINN_HARD_SIDE_BC_POWER_START", "HARD_SIDE_BC_POWER_START")
+    _maybe_float("PINN_HARD_SIDE_BC_POWER_END", "HARD_SIDE_BC_POWER_END")
 
     _maybe_str("PINN_DECODE_MODE", "DISPLACEMENT_DECODE_MODE")
     _maybe_str("PINN_FEA_NPY", "FEA_NPY_PATH")
@@ -139,6 +151,8 @@ def _apply_env_overrides():
     _maybe_int("PINN_PATCH_FOCUS_EPOCH", "PATCH_FOCUS_EPOCH")
     _maybe_float("PINN_PATCH_FOCUS_MASK_SAMPLING_POWER", "PATCH_FOCUS_MASK_SAMPLING_POWER")
     _maybe_float("PINN_PATCH_FOCUS_MASK_LOSS_POWER", "PATCH_FOCUS_MASK_LOSS_POWER")
+    _maybe_int("PINN_PATCH_UZ_SUP_DECAY_EPOCH", "PATCH_UZ_SUP_DECAY_EPOCH")
+    _maybe_float("PINN_PATCH_UZ_SUP_DECAY_FACTOR", "PATCH_UZ_SUP_DECAY_FACTOR")
 
 def _load_compatible_state_dict(pinn, ckpt_path, device):
     sd = torch.load(ckpt_path, map_location=device, weights_only=True)
@@ -213,6 +227,34 @@ def _load_compatible_state_dict(pinn, ckpt_path, device):
             if src_w.shape != tgt_w.shape:
                 sd[w_key] = _adapt_first_layer(src_w, tgt_w)
 
+    # Adapt output layer when switching between displacement-only (3) and mixed (9) outputs.
+    # Preserve the learned displacement rows and initialize extra stress rows to 0 for stability.
+    for li in range(3):
+        w_key = f"layers.{li}.net.8.weight"
+        b_key = f"layers.{li}.net.8.bias"
+        if w_key in sd and w_key in target_sd:
+            src_w = sd[w_key]
+            tgt_w = target_sd[w_key]
+            if src_w.shape != tgt_w.shape and src_w.shape[1] == tgt_w.shape[1]:
+                out_src, out_tgt = int(src_w.shape[0]), int(tgt_w.shape[0])
+                if out_src == 3 and out_tgt == 9:
+                    w_new = torch.zeros_like(tgt_w)
+                    w_new[0:3, :] = src_w
+                    sd[w_key] = w_new
+                elif out_src == 9 and out_tgt == 3:
+                    sd[w_key] = src_w[0:3, :].clone()
+        if b_key in sd and b_key in target_sd:
+            src_b = sd[b_key]
+            tgt_b = target_sd[b_key]
+            if src_b.shape != tgt_b.shape:
+                out_src, out_tgt = int(src_b.shape[0]), int(tgt_b.shape[0])
+                if out_src == 3 and out_tgt == 9:
+                    b_new = torch.zeros_like(tgt_b)
+                    b_new[0:3] = src_b
+                    sd[b_key] = b_new
+                elif out_src == 9 and out_tgt == 3:
+                    sd[b_key] = src_b[0:3].clone()
+
     # Drop incompatible tensors (e.g., when NEURONS/LAYERS changed) to allow partial warm-start.
     filtered = {}
     dropped = 0
@@ -248,6 +290,13 @@ def get_loss_weights(epoch, use_hard_bc=True):
     if not use_hard_bc:
         weights['pde'] *= config.SOFT_MODE_PDE_WEIGHT_SCALE
         weights['load'] *= config.SOFT_MODE_LOAD_WEIGHT_SCALE
+
+    # Optional patch u_z anchor decay schedule.
+    decay_epoch = getattr(config, "PATCH_UZ_SUP_DECAY_EPOCH", None)
+    if decay_epoch is not None and int(decay_epoch) >= 0 and epoch >= int(decay_epoch):
+        factor = float(getattr(config, "PATCH_UZ_SUP_DECAY_FACTOR", 0.1))
+        if "patch_uz_sup" in weights:
+            weights["patch_uz_sup"] = float(weights["patch_uz_sup"]) * factor
     return weights
 
 def train():
@@ -277,6 +326,16 @@ def train():
     epochs_lbfgs = int(os.getenv("PINN_EPOCHS_LBFGS", str(config.EPOCHS_LBFGS)))
     log_every = int(os.getenv("PINN_LOG_EVERY", "100"))
     resample_every = int(os.getenv("PINN_RESAMPLE_EVERY", "500"))
+    stop_global_mae_pct_env = os.getenv("PINN_STOP_GLOBAL_MAE_PCT", "").strip()
+    stop_patch_top_uz_pct_env = os.getenv("PINN_STOP_PATCH_TOP_UZ_PCT", "").strip()
+    try:
+        stop_global_mae_pct = float(stop_global_mae_pct_env) if stop_global_mae_pct_env else None
+    except ValueError:
+        stop_global_mae_pct = None
+    try:
+        stop_patch_top_uz_mae_pct = float(stop_patch_top_uz_pct_env) if stop_patch_top_uz_pct_env else None
+    except ValueError:
+        stop_patch_top_uz_mae_pct = None
     
     # Initialize Model
     pinn = model.MultiLayerPINN().to(device)
@@ -316,8 +375,12 @@ def train():
         precondition_frequency=config.SOAP_PRECONDITION_FREQUENCY,
     )
     
-    # Learning rate scheduler: reduce by 0.3 every epochs_adam//5 steps
-    scheduler = optim.lr_scheduler.StepLR(optimizer_adam, step_size=config.EPOCHS_ADAM//5, gamma=0.3)
+    # Learning rate scheduler: reduce by 0.3 every ~epochs_adam//5 steps (min 1).
+    scheduler = optim.lr_scheduler.StepLR(
+        optimizer_adam,
+        step_size=max(1, int(config.EPOCHS_ADAM // 5)),
+        gamma=0.3,
+    )
     
     # Load FEM data for comparison
     print("Loading FEM solution for comparison...")
@@ -357,6 +420,7 @@ def train():
         pts_fea = np.hstack([pts_fea, e1_ones, t1_ones, e2_ones, t2_ones, e3_ones, t3_ones, r_ones, mu_ones, v0_ones])
         pts_fea_tensor = torch.tensor(pts_fea, dtype=torch.float32).to(device)
         u_fea_flat = U_fea.reshape(-1, 3)
+        u_fea_abs_max = float(np.max(np.abs(u_fea_flat)))
         u_fea_top_uz = U_fea[:, :, -1, 2].astype(np.float32, copy=False)
         top_uz_denom = float(np.max(np.abs(u_fea_top_uz)))
         
@@ -370,6 +434,29 @@ def train():
     
     # Data Container
     training_data = data.get_data()
+
+    # Optional: light supervision anchor on FEM top-patch u_z (depth calibration only).
+    # Enabled by setting config.WEIGHTS['patch_uz_sup'] > 0 via env override PINN_W_PATCH_UZ_SUP.
+    patch_sup_x = None
+    patch_sup_uz = None
+    if fem_available and float(config.WEIGHTS.get("patch_uz_sup", 0.0)) > 0.0:
+        z = pts_fea[:, 2]
+        H_fea = float(getattr(config, "H", np.max(z)))
+        top = np.isclose(z, H_fea)
+        x = pts_fea[:, 0]
+        y = pts_fea[:, 1]
+        x0, x1 = map(float, config.LOAD_PATCH_X)
+        y0, y1 = map(float, config.LOAD_PATCH_Y)
+        patch = top & (x >= x0) & (x <= x1) & (y >= y0) & (y <= y1)
+        if np.any(patch):
+            patch_sup_x = torch.tensor(pts_fea[patch], dtype=torch.float32)
+            patch_sup_uz = torch.tensor(u_fea_flat[patch, 2], dtype=torch.float32).unsqueeze(1)
+            training_data["patch_sup_x"] = patch_sup_x
+            training_data["patch_sup_uz"] = patch_sup_uz
+            print(
+                f"Patch u_z anchor enabled: N={int(patch_sup_x.shape[0])} "
+                f"(weight={float(config.WEIGHTS.get('patch_uz_sup', 0.0))})"
+            )
 
     # Load and attach Parametric/Hybrid Supervision Data
     if getattr(config, "USE_SUPERVISION_DATA", True) and hasattr(config, "N_DATA_POINTS") and hasattr(config, "DATA_E_VALUES"):
@@ -429,6 +516,8 @@ def train():
     best_fem_epoch = None
     best_fem_patch_mae = float("inf")
     best_fem_patch_epoch = None
+    best_patch_top_uz_mae_pct = float("inf")
+    best_patch_top_uz_epoch = None
     best_top_uz_mae_pct = float("inf")
     best_top_uz_epoch = None
     
@@ -446,15 +535,52 @@ def train():
                 f"LOAD_MASK_LOSS_POWER={config.LOAD_MASK_LOSS_POWER}"
             )
 
+        # impact_params-style soft->hard (or hard->soft) clamp schedule.
+        # We implement this as an exponent ramp on the hard-mask factor:
+        #   u <- u * mask**power, power∈[0, HARD_SIDE_BC_POWER]
+        # power=0 => effectively soft; power=HARD_SIDE_BC_POWER => fully hard.
+        p_start = float(getattr(config, "HARD_SIDE_BC_POWER_START", 0.0))
+        p_end = float(getattr(config, "HARD_SIDE_BC_POWER_END", float(getattr(config, "HARD_SIDE_BC_POWER", 1.0))))
+        # Backward compatibility: if a user only overrides HARD_SIDE_BC_POWER, use it as the end power.
+        if os.getenv("PINN_HARD_SIDE_BC_POWER") is not None and os.getenv("PINN_HARD_SIDE_BC_POWER") != "":
+            p_end = float(getattr(config, "HARD_SIDE_BC_POWER", p_end))
+        base_power = max(p_start, p_end)
         if config.FORCE_SOFT_SIDE_BC_FROM_START:
-            use_hard_bc = False
+            target_power = 0.0
+            config.USE_HARD_SIDE_BC = False
+            pinn.set_hard_bc(False)
         else:
-            use_hard_bc = epoch < config.HARD_BC_EPOCHS
-            if config.USE_HARD_SIDE_BC != use_hard_bc:
-                config.USE_HARD_SIDE_BC = use_hard_bc
-                pinn.set_hard_bc(use_hard_bc)
-                if not use_hard_bc:
-                    print("Switching to soft side BCs (mask off) to lift deflection.")
+            sched = str(getattr(config, "HARD_BC_SCHEDULE", "hard_to_soft")).lower().strip()
+            denom = float(max(1, int(getattr(config, "HARD_BC_EPOCHS", 1))))
+            t = float(epoch) / denom
+            t = 0.0 if t < 0.0 else (1.0 if t > 1.0 else t)
+            if sched == "soft_to_hard":
+                target_power = p_start + t * (p_end - p_start)
+            elif sched == "hard_to_soft":
+                target_power = p_start + t * (p_end - p_start)
+            else:
+                # Fallback to legacy behavior: step toggle.
+                target_power = p_end if epoch < int(getattr(config, "HARD_BC_EPOCHS", 0)) else p_start
+
+            if target_power <= 0.0:
+                if config.USE_HARD_SIDE_BC:
+                    config.USE_HARD_SIDE_BC = False
+                    pinn.set_hard_bc(False)
+            else:
+                if not config.USE_HARD_SIDE_BC:
+                    config.USE_HARD_SIDE_BC = True
+                    pinn.set_hard_bc(True)
+        # keep the current power on config for LayerNet.forward()
+        config.HARD_SIDE_BC_POWER = float(max(0.0, target_power))
+        # Consider the mask "hard" only when the ramp is essentially fully on.
+        use_hard_bc = bool(
+            config.USE_HARD_SIDE_BC and base_power > 0.0 and (config.HARD_SIDE_BC_POWER >= 0.999 * base_power)
+        )
+        if log_every > 0 and epoch % log_every == 0:
+            if config.USE_HARD_SIDE_BC:
+                print(f"Side clamp mask: ON (power={config.HARD_SIDE_BC_POWER:.3f}/{base_power:.3f}, schedule={getattr(config,'HARD_BC_SCHEDULE','')})")
+            else:
+                print("Side clamp mask: OFF")
         
         if resample_every > 0 and epoch % resample_every == 0 and epoch > 0:
             if bool(getattr(config, "TRAIN_FIXED_PARAMS", False)):
@@ -466,6 +592,9 @@ def train():
                 # For parametric training, keep broad coverage of the parameter domain.
                 training_data = data.get_data()
                 print(f"  Resampled uniformly (parametric mode) at epoch {epoch}")
+            if patch_sup_x is not None and patch_sup_uz is not None:
+                training_data["patch_sup_x"] = patch_sup_x
+                training_data["patch_sup_uz"] = patch_sup_uz
             
         weights = get_loss_weights(epoch, use_hard_bc)
         loss_val, losses = physics.compute_loss(pinn, training_data, device, weights=weights)
@@ -503,6 +632,10 @@ def train():
                     diff = np.abs(u_pinn_flat - u_fea_flat)
                     mae = np.mean(diff)
                     max_err = np.max(diff)
+                    if u_fea_abs_max > 0.0:
+                        mae_pct = (float(mae) / float(u_fea_abs_max)) * 100.0
+                    else:
+                        mae_pct = float("nan")
 
                     # Top surface u_z metric (MAE as % of max |FEA u_z| on the top surface).
                     if u_fea_top_uz is not None and top_uz_denom > 0.0:
@@ -524,8 +657,14 @@ def train():
                     patch = top & (x >= x0) & (x <= x1) & (y >= y0) & (y <= y1)
                     if np.any(patch):
                         patch_mae = float(np.mean(np.abs(u_pinn_flat[patch] - u_fea_flat[patch])))
+                        if u_fea_top_uz is not None and top_uz_denom > 0.0:
+                            patch_uz_mae = float(np.mean(np.abs(u_pinn_flat[patch, 2] - u_fea_flat[patch, 2])))
+                            patch_uz_mae_pct = (patch_uz_mae / float(top_uz_denom)) * 100.0
+                        else:
+                            patch_uz_mae_pct = float("nan")
                     else:
                         patch_mae = float("nan")
+                        patch_uz_mae_pct = float("nan")
 
                     adam_history['fem_mae'].append(mae)
                     adam_history['fem_max_err'].append(max_err)
@@ -553,18 +692,37 @@ def train():
                         print(
                             f"  New best TOP u_z MAE%: {best_top_uz_mae_pct:.2f}% at epoch {best_top_uz_epoch} (saved {best_top_path})"
                         )
+
+                    if np.isfinite(patch_uz_mae_pct) and patch_uz_mae_pct < best_patch_top_uz_mae_pct:
+                        best_patch_top_uz_mae_pct = float(patch_uz_mae_pct)
+                        best_patch_top_uz_epoch = int(epoch)
+                        best_patch_uz_path = _tag_path("pinn_model_best_patch_top_uz.pth")
+                        torch.save(pinn.state_dict(), best_patch_uz_path)
+                        print(
+                            f"  New best PATCH-top u_z MAE%: {best_patch_top_uz_mae_pct:.2f}% at epoch {best_patch_top_uz_epoch} (saved {best_patch_uz_path})"
+                        )
                     
                 print(f"Epoch {epoch}: Total Loss: {loss_val.item():.6f} | "
                       f"PDE: {losses['pde']:.6f} | BC_sides: {losses['bc_sides']:.6f} | "
                       f"Free_top: {losses['free_top']:.6f} | Free_side: {losses.get('free_side', torch.tensor(0.0)).item():.6f} | Free_bot: {losses['free_bot']:.6f} | "
                       f"Load: {losses['load']:.6f} | Energy: {losses['energy']:.6f} | "
+                      f"PatchSup: {losses.get('patch_uz_sup', torch.tensor(0.0)).item():.6f} | "
                       f"IntU: {losses.get('interface_u', torch.tensor(0.0)).item():.6f} | IntT: {losses.get('interface_t', torch.tensor(0.0)).item():.6f} | "
                       f"ImpactC: {losses.get('impact_contact', torch.tensor(0.0)).item():.6f} | "
                       f"FricC: {losses.get('friction_coulomb', torch.tensor(0.0)).item():.6f} | "
                       f"FricS: {losses.get('friction_stick', torch.tensor(0.0)).item():.6f} | "
                       f"ImpactInv: {losses.get('impact_invariance', torch.tensor(0.0)).item():.6f} | "
                       f"LR: {current_lr:.2e} | "
-                      f"FEM MAE: {mae:.6f} | FEM PATCH MAE: {patch_mae:.6f} | TOP u_z MAE%: {top_uz_mae_pct:.2f}% | Time: {step_duration:.4f}s")
+                      f"FEM MAE: {mae:.6f} ({mae_pct:.2f}%) | FEM PATCH MAE: {patch_mae:.6f} | TOP u_z MAE%: {top_uz_mae_pct:.2f}% | PATCH-top u_z MAE%: {patch_uz_mae_pct:.2f}% | Time: {step_duration:.4f}s")
+
+                if stop_global_mae_pct is not None or stop_patch_top_uz_mae_pct is not None:
+                    ok_global = True if stop_global_mae_pct is None else (np.isfinite(mae_pct) and mae_pct <= stop_global_mae_pct)
+                    ok_patch = True if stop_patch_top_uz_mae_pct is None else (np.isfinite(patch_uz_mae_pct) and patch_uz_mae_pct <= stop_patch_top_uz_mae_pct)
+                    if ok_global and ok_patch:
+                        final_path = _tag_path("pinn_model_target_reached.pth")
+                        torch.save(pinn.state_dict(), final_path)
+                        print(f"Target reached at epoch {epoch}: saved {final_path}")
+                        return pinn
             else:
                 print(f"Epoch {epoch}: Total Loss: {loss_val.item():.6f} | "
                       f"PDE: {losses['pde']:.6f} | BC_sides: {losses['bc_sides']:.6f} | "
@@ -585,8 +743,9 @@ def train():
     
     # L-BFGS Fine-Tuning
     print("Starting L-BFGS Fine-Tuning...")
-    config.USE_HARD_SIDE_BC = False
-    pinn.set_hard_bc(False)
+    # Keep the current hard/soft side-BC setting for L-BFGS unless the user explicitly
+    # overrides it via env/config. For many FEM-parity cases, the hard mask is required
+    # to preserve boundary shape during second-order optimization.
     optimizer_lbfgs = optim.LBFGS(
         pinn.parameters(),
         lr=1.0,
@@ -636,6 +795,10 @@ def train():
                 diff = np.abs(u_pinn_flat - u_fea_flat)
                 mae = np.mean(diff)
                 max_err = np.max(diff)
+                if u_fea_abs_max > 0.0:
+                    mae_pct = (float(mae) / float(u_fea_abs_max)) * 100.0
+                else:
+                    mae_pct = float("nan")
 
                 if u_fea_top_uz is not None and top_uz_denom > 0.0:
                     u_pred_grid = u_pinn_flat.reshape(U_fea.shape)
@@ -688,7 +851,16 @@ def train():
                   f"FricC: {losses.get('friction_coulomb', torch.tensor(0.0)).item():.6e} | "
                   f"FricS: {losses.get('friction_stick', torch.tensor(0.0)).item():.6e} | "
                   f"ImpactInv: {losses.get('impact_invariance', torch.tensor(0.0)).item():.6e} | "
-                  f"FEM MAE: {mae:.6e} | FEM PATCH MAE: {patch_mae:.6e} | TOP u_z MAE%: {top_uz_mae_pct:.2f}% | Time: {step_end - step_start:.4f}s")
+                  f"FEM MAE: {mae:.6e} ({mae_pct:.2f}%) | FEM PATCH MAE: {patch_mae:.6e} | TOP u_z MAE%: {top_uz_mae_pct:.2f}% | Time: {step_end - step_start:.4f}s")
+
+            if stop_global_mae_pct is not None or stop_patch_top_uz_mae_pct is not None:
+                ok_global = True if stop_global_mae_pct is None else (np.isfinite(mae_pct) and mae_pct <= stop_global_mae_pct)
+                ok_patch = True if stop_patch_top_uz_mae_pct is None else (np.isfinite(top_uz_mae_pct) and top_uz_mae_pct <= stop_patch_top_uz_mae_pct)
+                if ok_global and ok_patch:
+                    final_path = _tag_path("pinn_model_target_reached.pth")
+                    torch.save(pinn.state_dict(), final_path)
+                    print(f"Target reached at LBFGS step {i}: saved {final_path}")
+                    return pinn
         else:
             print(f"L-BFGS Step {i}: Total Loss: {loss_val.item():.6e} | PDE: {losses['pde'].item():.6e} | "
                   f"BC_sides: {losses['bc_sides'].item():.6e} | Free_top: {losses['free_top'].item():.6e} | "

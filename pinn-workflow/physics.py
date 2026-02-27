@@ -52,6 +52,9 @@ def decode_u(v: torch.Tensor, x: torch.Tensor, *, E_override: torch.Tensor | Non
     - local: u=v/E_local (or E_override)
     - global: u=v/E_eff (or E_override)
     """
+    # Mixed-form networks output [u(3), sigma_voigt(6)].
+    if v.shape[1] > 3:
+        v = v[:, 0:3]
     mode = str(getattr(config, "DISPLACEMENT_DECODE_MODE", "none")).lower().strip()
     if mode in {"none", "identity", "u"}:
         u = v
@@ -232,14 +235,16 @@ def compute_loss(model, data, device, weights=None):
     grad_u = gradient(u, x_int)
     eps = strain(grad_u)
     sig = stress(eps, lm, mu)
-    div_sigma = divergence(sig, x_int)
-    
-    # Equilibrium: -div(sigma) = 0 (scale to stress units)
-    residual = -div_sigma * getattr(config, "PDE_LENGTH_SCALE", 1.0)
-    
-    pde_loss = torch.mean(residual**2)
-    losses['pde'] = pde_loss
-    total_loss += weights['pde'] * pde_loss
+    w_pde = float(weights.get("pde", 0.0))
+    if w_pde > 0.0:
+        div_sigma = divergence(sig, x_int)
+        # Equilibrium: -div(sigma) = 0 (scale to stress units)
+        residual = -div_sigma * getattr(config, "PDE_LENGTH_SCALE", 1.0)
+        pde_loss = torch.mean(residual**2)
+        losses["pde"] = pde_loss
+        total_loss += w_pde * pde_loss
+    else:
+        losses["pde"] = torch.zeros((), device=x_int.device)
     
     # Internal strain energy (volume integral, approximated by mean * volume).
     # Prefer unbiased sampling if provided.
@@ -380,9 +385,11 @@ def compute_loss(model, data, device, weights=None):
     x_top_work = data.get("top_load_energy", None)
     if x_top_work is not None and x_top_work.shape[0] > 0:
         x_tw = x_top_work.to(device)
-        with torch.no_grad():
-            v_tw = model(x_tw)
-            u_tw = decode_u(v_tw, x_tw)
+        # NOTE: external work must remain differentiable w.r.t. model parameters;
+        # do not wrap in no_grad(), otherwise the energy objective cannot drive
+        # the displacement magnitude under the applied load.
+        v_tw = model(x_tw)
+        u_tw = decode_u(v_tw, x_tw)
         mask_tw = load_mask(x_tw).unsqueeze(1)
         if n_top is None:
             external_work = (-config.p0 * u_tw[:, 2:3] * mask_tw).mean() * patch_area
@@ -399,9 +406,24 @@ def compute_loss(model, data, device, weights=None):
             load_area = float(data.get("top_load_area", patch_area))
             load_area_t = torch.tensor(load_area, device=device, dtype=u_top.dtype)
             external_work = (target * u_top).sum(dim=1, keepdim=True).mean() * load_area_t
-    energy_loss = internal_energy - external_work
-    losses['energy'] = energy_loss
-    total_loss += weights['energy'] * energy_loss
+    # Energy objective (physics-based, no supervision).
+    #
+    # For static linear elasticity with prescribed tractions, the solution minimizes
+    # total potential energy Π(u) = U(u) - W_ext(u), where:
+    #   U = ∫ 0.5 * ε:σ dV  (strain energy)
+    #   W_ext = ∫ t·u dA    (external work of applied tractions)
+    #
+    # Alternatively, the energy theorem gives 2U = W_ext at equilibrium; we can penalize
+    # (2U - W_ext)^2 as a soft constraint.
+    energy_obj = str(getattr(config, "ENERGY_OBJECTIVE", "potential")).lower().strip()
+    if energy_obj in {"balance", "theorem", "2u"}:
+        energy_resid = (2.0 * internal_energy) - external_work
+        losses["energy"] = energy_resid
+        total_loss += weights["energy"] * (energy_resid ** 2)
+    else:
+        potential_energy = internal_energy - external_work
+        losses["energy"] = potential_energy
+        total_loss += weights["energy"] * potential_energy
     
     # Top Free (traction-free)
     w_free = weights.get('free', weights.get('bc', 0.0))
@@ -575,6 +597,22 @@ def compute_loss(model, data, device, weights=None):
         # specific weight for data or default high weight
         w_data = weights.get('data', 1.0) 
         total_loss += w_data * loss_data
+
+    # Optional: top-patch u_z anchor (depth calibration).
+    # Uses MAE (matches evaluation metric style).
+    w_patch = float(weights.get("patch_uz_sup", 0.0))
+    x_patch = data.get("patch_sup_x", None)
+    uz_patch = data.get("patch_sup_uz", None)
+    if w_patch > 0.0 and x_patch is not None and uz_patch is not None:
+        xps = x_patch.to(device)
+        target = uz_patch.to(device)
+        vps = model(xps)
+        ups = decode_u(vps, xps)
+        patch_sup_loss = torch.mean(torch.abs(ups[:, 2:3] - target))
+        losses["patch_uz_sup"] = patch_sup_loss
+        total_loss += w_patch * patch_sup_loss
+    else:
+        losses["patch_uz_sup"] = torch.zeros((), device=device)
     
     losses['total'] = total_loss
     return total_loss, losses
