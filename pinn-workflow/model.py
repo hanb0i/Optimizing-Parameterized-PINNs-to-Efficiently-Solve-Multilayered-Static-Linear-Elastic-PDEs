@@ -7,7 +7,7 @@ import pinn_config as config
 
 
 class LayerNet(nn.Module):
-    def __init__(self, hidden_layers=4, hidden_units=64, activation=nn.Tanh()):
+    def __init__(self, hidden_layers=config.LAYERS, hidden_units=config.NEURONS, activation=nn.Tanh()):
         super().__init__()
         layers = []
         # Feature layout:

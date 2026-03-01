@@ -209,8 +209,8 @@ PATCH_UZ_SUP_DECAY_EPOCH = None  # e.g. 2000
 PATCH_UZ_SUP_DECAY_FACTOR = 0.1
 
 # --- Network Architecture ---
-LAYERS = 4
-NEURONS = 64
+LAYERS = 6
+NEURONS = 128
 
 # --- Training Hyperparameters ---
 LEARNING_RATE = 2e-4
