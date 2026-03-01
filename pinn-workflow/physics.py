@@ -309,6 +309,10 @@ def compute_residuals(model, data, device):
     Returns:
         Dictionary of residual magnitudes for each data type
     """
+    def _as_batch(x):
+        # Accept either (N, 3) or (3,) and return (N, 3).
+        return x.unsqueeze(0) if x.dim() == 1 else x
+
     residuals = {}
 
     # --- PDE Residuals (Interior) ---

@@ -1,4 +1,3 @@
-
 import torch
 import numpy as np
 import os
@@ -191,6 +190,15 @@ def sample_domain_under_patch(n, z_min, z_max):
     v0_min, v0_max = _get_impact_velocity_range()
     impact_velocity = torch.rand(n, 1) * (v0_max - v0_min) + v0_min
     return torch.cat([x, y, z, e, t, restitution, friction, impact_velocity], dim=1)
+
+def sample_domain_under_patch(n, z_min, z_max):
+    """Sample interior points directly under the load patch."""
+    x_min, x_max = config.LOAD_PATCH_X
+    y_min, y_max = config.LOAD_PATCH_Y
+    x = torch.rand(n, 1) * (x_max - x_min) + x_min
+    y = torch.rand(n, 1) * (y_max - y_min) + y_min
+    z = torch.rand(n, 1) * (z_max - z_min) + z_min
+    return torch.cat([x, y, z], dim=1)
 
 def sample_domain_residual_based(n, z_min, z_max, prev_pts, prev_residuals):
     """Sample points weighted by residual magnitude."""
