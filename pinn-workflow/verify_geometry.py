@@ -86,15 +86,16 @@ def run_geometry_verification():
     T_input = Z_top_torch # Thickness is local height
     
     # Other params (standard reference)
-    R_input = torch.full_like(X_torch, 0.5)
-    Mu_input = torch.full_like(X_torch, 0.3)
-    V0_input = torch.full_like(X_torch, 1.0)
+    # NOTE: `r` here is restitution (an "impact" conditioning input), not a sphere radius.
+    r_input = torch.full_like(X_torch, 0.5)
+    mu_input = torch.full_like(X_torch, 0.3)
+    v0_input = torch.full_like(X_torch, 1.0)
     
     # Flatten for batch processing
     inputs = torch.stack([
         X_torch.flatten(), Y_torch.flatten(), Z_phys_torch.flatten(),
         E_input.flatten(), T_input.flatten(),
-        R_input.flatten(), Mu_input.flatten(), V0_input.flatten()
+        r_input.flatten(), mu_input.flatten(), v0_input.flatten()
     ], dim=1)
     
     with torch.no_grad():

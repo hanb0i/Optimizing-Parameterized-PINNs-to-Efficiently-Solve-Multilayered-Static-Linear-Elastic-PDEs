@@ -6,6 +6,18 @@ Lx = 1.0
 Ly = 1.0
 H = 0.1  # Total height (baseline thickness)
 
+# --- Impactor (Sphere) metadata ---
+# NOTE: The current training loss does NOT enforce true rigid-sphere contact; this is
+# provided for reporting/visualization conventions only.
+SPHERE_CENTER_X = Lx / 2.0
+SPHERE_CENTER_Y = Ly / 2.0
+SPHERE_CENTER_Z = 0.5
+SPHERE_RADIUS = 0.5
+# "Material" for the sphere is not used by the PINN/FEA in this repo today. If you need
+# a value for a poster/board, treat the sphere as rigid (effectively very stiff).
+SPHERE_E_REPORT = 1.0e6
+SPHERE_NU_REPORT = 0.3
+
 # --- Geometry Configuration ---
 GEOMETRY_TYPE = "FLAT" # Options: "FLAT", "DENT"
 DENT_DEPTH = 0.0      # Amplitude of the dent (z_min at center = H - DENT_DEPTH)
