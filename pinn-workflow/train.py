@@ -19,26 +19,17 @@ def _load_compatible_state_dict(pinn, ckpt_path, device):
     if w_key in sd and w_key in target_sd:
         src_w = sd[w_key]
         tgt_w = target_sd[w_key]
-        if src_w.shape != tgt_w.shape and src_w.shape[0] == tgt_w.shape[0]:
-            # Old parametric model: [x,y,z,E,t,inv1,inv2,inv3]
-            if src_w.shape[1] == 8 and tgt_w.shape[1] == 11:
-                adapted = torch.zeros_like(tgt_w)
-                adapted[:, 0:5] = src_w[:, 0:5]
-                adapted[:, 8:11] = src_w[:, 5:8]
-                sd[w_key] = adapted
-                print("Adapted first-layer weights from 8->11 inputs (inserted neutral r/mu/v0 channels).")
-            elif src_w.shape[1] == 10 and tgt_w.shape[1] == 11:
-                adapted = torch.zeros_like(tgt_w)
-                adapted[:, 0:7] = src_w[:, 0:7]
-                adapted[:, 8:11] = src_w[:, 7:10]
-                sd[w_key] = adapted
-                print("Adapted first-layer weights from 10->11 inputs (inserted neutral v0 channel).")
+        if src_w.shape != tgt_w.shape:
+             print(f"Adapting weights: {src_w.shape} -> {tgt_w.shape}")
+             # We perform a simple zero-padding/truncation for the first layer
+             # This allows warm-starting from 8D/10D models by mapping shared 
+             # dimensions (x,y,z) and initializing others to zero.
+             new_w = torch.zeros_like(tgt_w)
+             min_dim = min(src_w.shape[1], tgt_w.shape[1])
+             new_w[:, :min_dim] = src_w[:, :min_dim]
+             sd[w_key] = new_w
     missing, unexpected = pinn.load_state_dict(sd, strict=False)
     print(f"Warm-start loaded from {ckpt_path}")
-    if missing:
-        print(f"  Missing keys: {len(missing)}")
-    if unexpected:
-        print(f"  Unexpected keys: {len(unexpected)}")
 
 def get_loss_weights(epoch, use_hard_bc=True):
     weights = dict(config.WEIGHTS)
@@ -105,17 +96,23 @@ def train():
         Z_fea = fem_data['z']
         U_fea = fem_data['u']
         
-        # Prepare FEM evaluation grid (append base E and thickness for parametric PINN)
+        # Prepare FEM evaluation grid (12D: x,y,z, E1,E2,E3, t1,t2,t3, r,mu,v0)
         pts_fea = np.stack([X_fea.ravel(), Y_fea.ravel(), Z_fea.ravel()], axis=1)
-        e_ones = np.ones((pts_fea.shape[0], 1)) * config.E_vals[0]
-        t_ones = np.ones((pts_fea.shape[0], 1)) * config.H
-        r_ref = float(getattr(config, "RESTITUTION_REF", 0.5))
-        mu_ref = float(getattr(config, "FRICTION_REF", 0.3))
-        v0_ref = float(getattr(config, "IMPACT_VELOCITY_REF", 1.0))
-        r_ones = np.ones((pts_fea.shape[0], 1)) * r_ref
-        mu_ones = np.ones((pts_fea.shape[0], 1)) * mu_ref
-        v0_ones = np.ones((pts_fea.shape[0], 1)) * v0_ref
-        pts_fea = np.hstack([pts_fea, e_ones, t_ones, r_ones, mu_ones, v0_ones])
+        num_pts = pts_fea.shape[0]
+        
+        # We assume common sandwich proportions for evaluation if not specified
+        # E1=E3=Skin, E2=Core
+        E1 = config.E1_vals[0]
+        E2 = config.E2_vals[0]
+        E3 = config.E3_vals[0]
+        t1 = config.t1_vals[0]
+        t2 = config.t2_vals[0]
+        t3 = config.t3_vals[0]
+        
+        params = np.array([[E1, E2, E3, t1, t2, t3, 0.5, 0.3, 1.0]])
+        params_tiled = np.tile(params, (num_pts, 1))
+        
+        pts_fea = np.hstack([pts_fea, params_tiled])
         pts_fea_tensor = torch.tensor(pts_fea, dtype=torch.float32).to(device)
         u_fea_flat = U_fea.reshape(-1, 3)
         
@@ -147,6 +144,8 @@ def train():
         'free_bot': [],
         'load': [],
         'energy': [],
+        'interface1': [],
+        'interface2': [],
         'impact_invariance': [],
         'impact_contact': [],
         'friction_coulomb': [],
@@ -164,6 +163,8 @@ def train():
         'free_bot': [],
         'load': [],
         'energy': [],
+        'interface1': [],
+        'interface2': [],
         'impact_invariance': [],
         'impact_contact': [],
         'friction_coulomb': [],
@@ -213,6 +214,8 @@ def train():
         adam_history['free_bot'].append(losses['free_bot'].item())
         adam_history['load'].append(losses['load'].item())
         adam_history['energy'].append(losses['energy'].item())
+        adam_history['interface1'].append(losses.get('interface_u_1', torch.tensor(0.0)).item())
+        adam_history['interface2'].append(losses.get('interface_u_2', torch.tensor(0.0)).item())
         adam_history['impact_invariance'].append(losses.get('impact_invariance', torch.tensor(0.0)).item())
         adam_history['impact_contact'].append(losses.get('impact_contact', torch.tensor(0.0)).item())
         adam_history['friction_coulomb'].append(losses.get('friction_coulomb', torch.tensor(0.0)).item())
@@ -235,26 +238,15 @@ def train():
                     adam_history['fem_max_err'].append(max_err)
                     adam_history['epochs'].append(epoch)
                     
-                print(f"Epoch {epoch}: Total Loss: {loss_val.item():.6f} | "
-                      f"PDE: {losses['pde']:.6f} | BC_sides: {losses['bc_sides']:.6f} | "
-                      f"Free_top: {losses['free_top']:.6f} | Free_bot: {losses['free_bot']:.6f} | "
-                      f"Load: {losses['load']:.6f} | Energy: {losses['energy']:.6f} | "
-                      f"ImpactC: {losses.get('impact_contact', torch.tensor(0.0)).item():.6f} | "
-                      f"FricC: {losses.get('friction_coulomb', torch.tensor(0.0)).item():.6f} | "
-                      f"FricS: {losses.get('friction_stick', torch.tensor(0.0)).item():.6f} | "
-                      f"ImpactInv: {losses.get('impact_invariance', torch.tensor(0.0)).item():.6f} | "
-                      f"LR: {current_lr:.2e} | "
-                      f"FEM MAE: {mae:.6f} | Time: {step_duration:.4f}s")
+                print(f"Epoch {epoch}: Loss: {loss_val.item():.4f} | "
+                      f"PDE: {losses['pde']:.4f} | BC: {losses['bc_sides']:.4f} | "
+                      f"Load: {losses['load']:.4f} | Interface: {losses.get('interface_u_1', torch.tensor(0.0)).item():.4f} | "
+                      f"MAE: {mae:.6f} | Time: {step_duration:.2f}s")
             else:
-                print(f"Epoch {epoch}: Total Loss: {loss_val.item():.6f} | "
-                      f"PDE: {losses['pde']:.6f} | BC_sides: {losses['bc_sides']:.6f} | "
-                      f"Free_top: {losses['free_top']:.6f} | Free_bot: {losses['free_bot']:.6f} | "
-                      f"Load: {losses['load']:.6f} | Energy: {losses['energy']:.6f} | "
-                      f"ImpactC: {losses.get('impact_contact', torch.tensor(0.0)).item():.6f} | "
-                      f"FricC: {losses.get('friction_coulomb', torch.tensor(0.0)).item():.6f} | "
-                      f"FricS: {losses.get('friction_stick', torch.tensor(0.0)).item():.6f} | "
-                      f"ImpactInv: {losses.get('impact_invariance', torch.tensor(0.0)).item():.6f} | "
-                      f"LR: {current_lr:.2e} | Time: {step_duration:.4f}s")
+                print(f"Epoch {epoch}: Loss: {loss_val.item():.4f} | "
+                      f"PDE: {losses['pde']:.4f} | BC: {losses['bc_sides']:.4f} | "
+                      f"Load: {losses['load']:.4f} | IF: {losses.get('interface_traction_1', torch.tensor(0.0)).item():.4f} | "
+                      f"Time: {step_duration:.2f}s")
             
     print(f"SOAP Pretraining Complete. Total Time: {time.time() - start_time:.2f}s")
     
@@ -295,6 +287,8 @@ def train():
         lbfgs_history['free_bot'].append(losses['free_bot'].item())
         lbfgs_history['load'].append(losses['load'].item())
         lbfgs_history['energy'].append(losses['energy'].item())
+        lbfgs_history['interface1'].append(losses.get('interface_u_1', torch.tensor(0.0)).item())
+        lbfgs_history['interface2'].append(losses.get('interface_u_2', torch.tensor(0.0)).item())
         lbfgs_history['impact_invariance'].append(losses.get('impact_invariance', torch.tensor(0.0)).item())
         lbfgs_history['impact_contact'].append(losses.get('impact_contact', torch.tensor(0.0)).item())
         lbfgs_history['friction_coulomb'].append(losses.get('friction_coulomb', torch.tensor(0.0)).item())
@@ -303,17 +297,7 @@ def train():
         # Compute FEM error and print
         if fem_available:
             with torch.no_grad():
-                v_pinn_flat = pinn(pts_fea_tensor, 0).cpu().numpy()
-                # Apply compliance scaling u = (v / E^p) * (H / t)^alpha
-                E_vals = pts_fea[:, 3:4]
-                t_vals = pts_fea[:, 4:5]
-                alpha = float(getattr(config, "THICKNESS_COMPLIANCE_ALPHA", 0.0))
-                if alpha == 0.0:
-                    t_scale = 1.0
-                else:
-                    t_scale = (float(getattr(config, "H", 1.0)) / np.clip(t_vals, 1e-8, None)) ** alpha
-                e_pow = float(getattr(config, "E_COMPLIANCE_POWER", 1.0))
-                u_pinn_flat = (v_pinn_flat / (E_vals ** e_pow)) * t_scale
+                u_pinn_flat = pinn(pts_fea_tensor, 0).cpu().numpy()
                 diff = np.abs(u_pinn_flat - u_fea_flat)
                 mae = np.mean(diff)
                 max_err = np.max(diff)

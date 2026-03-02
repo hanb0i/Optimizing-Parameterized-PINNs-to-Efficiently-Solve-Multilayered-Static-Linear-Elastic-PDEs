@@ -43,37 +43,31 @@ LAYER_NU_VALS = [0.3, 0.3, 0.3]
 # Parameterized PINN settings unused in Phase 5
 E_vals = [1.0] 
 nu_vals = [0.3]
-# Parameterized PINN settings (do not alter baseline values)
-E_RANGE = [1.0, 10.0]
-THICKNESS_RANGE = [0.05, 0.15]
+# Parameterized PINN settings for 12D Multi-Layer
+# Params: [E1, E2, E3, t1, t2, t3, r, mu, v0] = 9 params
+E_RANGE = [1.0, 20.0]
+THICKNESS_RANGE = [0.01, 0.08] # Per-layer range
 RESTITUTION_RANGE = [0.1, 0.9]
 FRICTION_RANGE = [0.0, 0.6]
 IMPACT_VELOCITY_RANGE = [0.2, 2.0]
-PARAM_DIM = 5
 
-# Optional: explicit E sweep values for `verify_parametric_pinn.py`.
-# If not set, it uses `np.linspace(E_RANGE[0], E_RANGE[1], PINN_VERIFY_E_STEPS)`.
-# VERIFY_E_SWEEP_VALUES = np.linspace(E_RANGE[0], E_RANGE[1], 10).tolist()
-# Optional: explicit restitution/friction sweep values for verification.
-# VERIFY_RESTITUTION_SWEEP_VALUES = np.linspace(RESTITUTION_RANGE[0], RESTITUTION_RANGE[1], 7).tolist()
-# VERIFY_FRICTION_SWEEP_VALUES = np.linspace(FRICTION_RANGE[0], FRICTION_RANGE[1], 7).tolist()
-# VERIFY_IMPACT_VELOCITY_SWEEP_VALUES = np.linspace(IMPACT_VELOCITY_RANGE[0], IMPACT_VELOCITY_RANGE[1], 7).tolist()
+# Baseline values for evaluation
+E1_vals = [10.0]
+E2_vals = [1.0]
+E3_vals = [10.0]
+t1_vals = [0.02]
+t2_vals = [0.06]
+t3_vals = [0.02]
+PARAM_DIM = 9 
 
-# Reference parameter values for parity with baseline FEA (which has no restitution/friction).
+# ... (Reference values) ...
 RESTITUTION_REF = 0.5
 FRICTION_REF = 0.3
 IMPACT_VELOCITY_REF = 1.0
 
-# Inference-time compliance correction for E:
-# Use u = v / E^p instead of v / E (p=1.0). This can help slightly reduce
-# high-E under/over-shoot without retraining.
 # --- Parametric compliance scaling ---
-# Many plate-like problems scale strongly with thickness (often ~ 1/t^3).
-# We apply a simple thickness-aware scaling in the physics layer:
-#   u = (v / E) * (H / t)^alpha
-# where H is the baseline thickness (config.H) and t is the sampled thickness.
-THICKNESS_COMPLIANCE_ALPHA = 1.6 # Enabled for high-accuracy anchoring
-E_COMPLIANCE_POWER = 1.0        # Force 1/E relationship
+THICKNESS_COMPLIANCE_ALPHA = 1.6 
+E_COMPLIANCE_POWER = 1.0        
 
 def get_lame_params(E, nu):
     lm = (E * nu) / ((1 + nu) * (1 - 2 * nu))
@@ -86,40 +80,39 @@ Lame_Params = [get_lame_params(e, n) for e, n in zip(E_vals, nu_vals)]
 p0 = 1.0 # Load magnitude
 
 # --- Unit-consistent loss scaling ---
-# div(sigma) has units of stress/length; scale by a characteristic length.
 PDE_LENGTH_SCALE = H
-OUTPUT_SCALE_Z = 1.0 # Centered for compliance anchors
+OUTPUT_SCALE_Z = 10.0 # Crucial factor for Tanh stability
 
 # --- Boundary condition handling ---
-# Use hard mask early for shape, then switch to soft BCs for magnitude.
-USE_HARD_SIDE_BC = True # Experiment B: Hard BCs to eliminate boundary noise
-HARD_BC_EPOCHS = 1000
+USE_HARD_SIDE_BC = False 
+HARD_BC_EPOCHS = 0
+FORCE_SOFT_SIDE_BC_FROM_START = True
 
 # Load patch boundaries (normalized coordinates)
-LOAD_PATCH_X = [Lx/3, 2*Lx/3]  # [0.333, 0.667]
-LOAD_PATCH_Y = [Ly/3, 2*Ly/3]  # [0.333, 0.667]
+LOAD_PATCH_X = [Lx/3, 2*Lx/3]
+LOAD_PATCH_Y = [Ly/3, 2*Ly/3]
 
 # --- Network Architecture ---
-LAYERS = 4
+LAYERS = 6
 NEURONS = 64
 
 # --- Training Hyperparameters ---
 LEARNING_RATE = 1e-3
-EPOCHS_ADAM = 4000 # Full high-accuracy run
-EPOCHS_LBFGS = 500 # Full high-accuracy run
-# SOAP optimizer
-SOAP_PRECONDITION_FREQUENCY = 10 # Lower = more frequent curvature updates; higher = cheaper but less responsive
-#Plot Physical Residuals Every N Epochs every 100 epochs. 
+EPOCHS_ADAM = 2500 
+EPOCHS_LBFGS = 500 
+SOAP_PRECONDITION_FREQUENCY = 10
+
 WEIGHTS = {
-    'pde': 10.0,    # High accuracy baseline
-    'bc': 1.0,      # High accuracy baseline
-    'load': 50.0,   # High accuracy baseline (breaks low-disp trap)
-    'energy': 0.1,  # Minor stabilization
+    'pde': 10.0,
+    'bc': 1.0,
+    'load': 100.0,   # Increase to force magnitude
+    'energy': 0.1,
     'impact_invariance': 0.0,
     'impact_contact': 0.0002,
     'friction_coulomb': 0.001,
     'friction_stick': 0.0005,
-    'interface_u': 0.0, # Single layer focus
+    'interface_u': 50.0,      # High interface continuity
+    'interface_traction': 50.0, # Stress continuity
     'data': 1.0
 }
 
@@ -133,11 +126,11 @@ FORCE_SOFT_SIDE_BC_FROM_START = True
 SOFT_MODE_PDE_WEIGHT_SCALE = 1.0 # Simplified: No auto-scaling, set base weights directly
 SOFT_MODE_LOAD_WEIGHT_SCALE = 1.0
 # Sampling
-N_INTERIOR = 15000 # Per layer
-N_SIDES = 2000  # Clamped side faces
-N_TOP_LOAD = 6000  # Load patch (more points to boost displacement)
-N_TOP_FREE = 2000  # Top free surface
-N_BOTTOM = 2000  # Bottom free surface
+N_INTERIOR = 4000 # Per layer
+N_SIDES = 1000  # Clamped side faces
+N_TOP_LOAD = 2000  # Load patch (more points to boost displacement)
+N_TOP_FREE = 1000  # Top free surface
+N_BOTTOM = 1000  # Bottom free surface
 UNDER_PATCH_FRACTION = 0.95 # More interior points focus under the load patch
 
 #Resampling/perturbation control

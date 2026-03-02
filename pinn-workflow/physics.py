@@ -94,48 +94,22 @@ def divergence(sigma, x):
     return div
 
 def get_material_properties(x):
+    # x is (N, 12): [x, y, z, E1, E2, E3, t1, t2, t3, r, mu, v0]
     z = x[:, 2:3]
-    if hasattr(config, "LAYER_Z_RATIOS"):
-        # Geometry-aware Layer Assignment
-        x_coords = x[:, 0:1]
-        y_coords = x[:, 1:2]
-        z_top = config.get_domain_height(x_coords, y_coords)
-        
-        # Avoid division by zero (shouldn't happen with H=0.1)
-        z_rel = z / (z_top + 1e-8)
-        
-        # Initialize with Core properties
-        dims = z.shape
-        E = torch.ones(dims, device=x.device) * config.LAYER_E_VALS[1]
-        nu = torch.ones(dims, device=x.device) * config.LAYER_NU_VALS[1]
-        
-        # Bottom Layer (0.0 to ratio[0])
-        mask_bot = (z_rel <= config.LAYER_Z_RATIOS[0] + 1e-4) # Be generous at interfaces
-        E[mask_bot] = config.LAYER_E_VALS[0]
-        nu[mask_bot] = config.LAYER_NU_VALS[0]
-        
-        # Top Layer (ratio[1] to 1.0)
-        mask_top = (z_rel >= config.LAYER_Z_RATIOS[1] - 1e-4)
-        E[mask_top] = config.LAYER_E_VALS[2]
-        nu[mask_top] = config.LAYER_NU_VALS[2]
-        
-        return E, nu
-
-    elif hasattr(config, "LAYER_Z_RANGES"):
-        # Fallback to Fixed Geometry (Phase 5)
-        dims = z.shape
-        E = torch.ones(dims, device=x.device) * config.LAYER_E_VALS[1]
-        nu = torch.ones(dims, device=x.device) * config.LAYER_NU_VALS[1]
-        
-        for i, (z_start, z_end) in enumerate(config.LAYER_Z_RANGES):
-            mask = (z >= z_start - 1e-6) & (z <= z_end + 1e-6)
-            E[mask] = config.LAYER_E_VALS[i]
-            nu[mask] = config.LAYER_NU_VALS[i]
-        return E, nu
+    e1, e2, e3 = x[:, 3:4], x[:, 4:5], x[:, 5:6]
+    t1, t2, t3 = x[:, 6:7], x[:, 7:8], x[:, 8:9]
+    nu_ref = config.nu_vals[0]
     
-    # Fallback to parametric input
-    E = x[:, 3:4]
-    nu = torch.full_like(E, config.nu_vals[0])
+    # Layer 1: z < t1
+    # Layer 2: t1 <= z < t1 + t2
+    # Layer 3: t1 + t2 <= z
+    mask1 = (z < t1).float()
+    mask2 = ((z >= t1) & (z < t1 + t2)).float()
+    mask3 = (z >= t1 + t2).float()
+    
+    E = mask1 * e1 + mask2 * e2 + mask3 * e3
+    nu = torch.full_like(E, nu_ref)
+    
     return E, nu
 
 def compute_loss(model, data, device, weights=None):
@@ -146,195 +120,108 @@ def compute_loss(model, data, device, weights=None):
     
     # --- 1. PDE Residuals (Interior) ---
     x_int = data['interior'][0].to(device).detach().clone().requires_grad_(True)
+    E_int, nu_int = get_material_properties(x_int)
+    lm_int, mu_int = get_lame_params_torch(E_int, nu_int)
     
-    # Dynamic material properties
-    E_local, nu_local = get_material_properties(x_int)
-    t_local = x_int[:, 4:5]
-    
-    lm = (E_local * nu_local) / ((1 + nu_local) * (1 - 2 * nu_local))
-    mu = E_local / (2 * (1 + nu_local))
-    # lm, mu are already (N, 1) from the get_material_properties return
-    lm = lm.unsqueeze(2) # (N, 1, 1) for stress
-    mu = mu.unsqueeze(2)
-    
-    v_int = model(x_int, 0)
-
-    if getattr(config, "ENFORCE_IMPACT_INVARIANCE", False):
-        # Neutral-parameter mode: keep restitution/friction effect suppressed.
-        x_int_variant = x_int.clone()
-        r_min, r_max = getattr(config, "RESTITUTION_RANGE", (0.5, 0.5))
-        mu_min, mu_max = getattr(config, "FRICTION_RANGE", (0.3, 0.3))
-        v0_min, v0_max = getattr(config, "IMPACT_VELOCITY_RANGE", (1.0, 1.0))
-        if r_max > r_min:
-            x_int_variant[:, 5:6] = torch.rand_like(x_int_variant[:, 5:6]) * (r_max - r_min) + r_min
-        if mu_max > mu_min:
-            x_int_variant[:, 6:7] = torch.rand_like(x_int_variant[:, 6:7]) * (mu_max - mu_min) + mu_min
-        if v0_max > v0_min:
-            x_int_variant[:, 7:8] = torch.rand_like(x_int_variant[:, 7:8]) * (v0_max - v0_min) + v0_min
-        v_int_variant = model(x_int_variant, 0)
-        impact_invariance_loss = torch.mean((v_int - v_int_variant) ** 2)
-    else:
-        impact_invariance_loss = torch.zeros((), device=x_int.device)
-    losses['impact_invariance'] = impact_invariance_loss
-    total_loss += weights.get('impact_invariance', 0.0) * impact_invariance_loss
-
-    # Predict displacement u = v / E to handle parameter range.
-    # NOTE: Thickness compliance scaling (H/t)^alpha is applied at evaluation/plot time,
-    # not inside the PDE/traction losses, because the traction BC can otherwise cancel it.
-    u = v_int
-    
-    grad_u = gradient(u, x_int)
-    eps = strain(grad_u)
-    sig = stress(eps, lm, mu)
+    u_int = model(x_int)
+    grad_u = gradient(u_int, x_int)
+    sig = stress(strain(grad_u), lm_int.unsqueeze(2), mu_int.unsqueeze(2))
     div_sigma = divergence(sig, x_int)
     
-    # Equilibrium: -div(sigma) = 0 (scale to stress units)
-    residual = -div_sigma * getattr(config, "PDE_LENGTH_SCALE", 1.0)
-    
-    pde_loss = torch.mean(residual**2)
+    pde_res = div_sigma * getattr(config, "PDE_LENGTH_SCALE", 1.0)
+    pde_loss = torch.mean(pde_res**2)
     losses['pde'] = pde_loss
-    total_loss += weights['pde'] * pde_loss
+    total_loss += weights.get('pde', 1.0) * pde_loss
     
-    # Internal strain energy (volume integral, approximated by mean * volume)
-    energy_density = 0.5 * torch.einsum('bij,bij->b', eps, sig)
-    internal_energy = energy_density.mean() * (config.Lx * config.Ly * t_local.mean())
-    
-    # --- 2. Dirichlet BCs (Clamped Sides) ---
+    # --- 2. Dirichlet BCs (Sides) ---
     x_side = data['sides'][0].to(device)
-    E_side, _ = get_material_properties(x_side)
-    v_side = model(x_side, 0)
-    u_side = v_side
-    bc_loss = torch.mean(u_side**2)
-    losses['bc_sides'] = bc_loss
-    total_loss += weights['bc'] * bc_loss
+    u_side = model(x_side)
+    side_loss = torch.mean(u_side**2)
+    losses['bc_sides'] = side_loss
+    total_loss += weights.get('bc', 1.0) * side_loss
     
-    # --- Helper: Calculate Surface Normal ---
-    def calc_normal(x_points):
-        # n = (-dz/dx, -dz/dy, 1) / norm
-        # We need gradients of z_surface w.r.t x,y.
-        # Since z_surface is analytic in config, we can use autograd on config.get_domain_height
-        
-        # x_points has requires_grad=True
-        x_coords = x_points[:, 0:1]
-        y_coords = x_points[:, 1:2]
-        
-        # We need to compute gradients of z_top w.r.t x and y
-        # But get_domain_height uses returns a tensor. 
-        # To use autograd, we need to ensure the graph is connected.
-        # Re-implement small graph-friendly version or rely on finite diff/analytic if needed.
-        # Ideally, config.get_domain_height is written in torch, so we can just differentiate it.
-        
-        z_top = config.get_domain_height(x_coords, y_coords)
-        
-        try:
-            grad_z = torch.autograd.grad(z_top, [x_coords, y_coords], 
-                                         grad_outputs=torch.ones_like(z_top),
-                                         create_graph=True, retain_graph=True, allow_unused=True)
-            dz_dx = grad_z[0] if grad_z[0] is not None else torch.zeros_like(x_coords)
-            dz_dy = grad_z[1] if grad_z[1] is not None else torch.zeros_like(y_coords)
-        except RuntimeError:
-            # Fallback for FLAT geometry where z_top doesn't depend on x,y
-            dz_dx = torch.zeros_like(x_coords)
-            dz_dy = torch.zeros_like(y_coords)
-        
-        # Normal vector n = (-dz/dx, -dz/dy, 1)
-        n = torch.cat([-dz_dx, -dz_dy, torch.ones_like(dz_dx)], dim=1)
-        n = n / torch.norm(n, dim=1, keepdim=True)
-        return n
-
     # --- 3. Traction BCs (Top & Bottom) ---
-    # Top Loaded
-    x_top_load = data['top_load'].to(device).detach().clone().requires_grad_(True)
+    # Top Load
+    x_top_l = data['top_load'].to(device).detach().clone().requires_grad_(True)
+    E_tl, nu_tl = get_material_properties(x_top_l)
+    lm_tl, mu_tl = get_lame_params_torch(E_tl, nu_tl)
+    u_tl = model(x_top_l)
+    sig_tl = stress(strain(gradient(u_tl, x_top_l)), lm_tl.unsqueeze(2), mu_tl.unsqueeze(2))
     
-    E_local_load, nu_local_load = get_material_properties(x_top_load)
-    lm = (E_local_load * nu_local_load) / ((1 + nu_local_load) * (1 - 2 * nu_local_load))
-    mu = E_local_load / (2 * (1 + nu_local_load))
-    lm = lm.unsqueeze(2)
-    mu = mu.unsqueeze(2)
-    
-    v_top = model(x_top_load, 0)
-    u_top = v_top
-    grad_u_top = gradient(u_top, x_top_load)
-    sig_top = stress(strain(grad_u_top), lm, mu)
-    
-    # Traction vector T = sigma . n
-    n_top = calc_normal(x_top_load)
-    T = torch.einsum('bij,bj->bi', sig_top, n_top)
-    
-    mask = load_mask(x_top_load).unsqueeze(1)  # (N, 1)
-    # Target Load vector is -p0 * n (pressure acts normal to surface)
-    target_load = -config.p0 * mask * n_top
-    
-    # ... (Impact/Friction logic omitted for brevity in this phase, assuming simple pressure first) ...
-    # Standard Load Loss
-    loss_load = torch.mean((T - target_load)**2)
-    losses['load'] = loss_load
-    total_loss += weights['load'] * loss_load
-    
-    losses['energy'] = torch.tensor(0.0).to(device) # Placeholder
+    T_tl = sig_tl[:, :, 2]
+    # Normal is [0,0,1]
+    target_tl = torch.zeros_like(T_tl)
+    target_tl[:, 2] = -config.p0 # load_mask is 1 since data is sampled under patch
+    load_loss = torch.mean((T_tl - target_tl)**2)
+    losses['load'] = load_loss
+    total_loss += weights.get('load', 1.0) * load_loss
     
     # Top Free
-    x_top_free = data['top_free'].to(device).detach().clone().requires_grad_(True)
+    x_top_f = data['top_free'].to(device).detach().clone().requires_grad_(True)
+    E_tf, nu_tf = get_material_properties(x_top_f)
+    lm_tf, mu_tf = get_lame_params_torch(E_tf, nu_tf)
+    u_tf = model(x_top_f)
+    sig_tf = stress(strain(gradient(u_tf, x_top_f)), lm_tf.unsqueeze(2), mu_tf.unsqueeze(2))
+    T_tf = sig_tf[:, :, 2] # Normal [0,0,1]
+    free_top_loss = torch.mean(T_tf**2)
+    losses['free_top'] = free_top_loss
+    total_loss += weights.get('bc', 1.0) * free_top_loss
     
-    E_local_free, nu_local_free = get_material_properties(x_top_free)
-    lm_free = (E_local_free * nu_local_free) / ((1 + nu_local_free) * (1 - 2 * nu_local_free))
-    mu_free = E_local_free / (2 * (1 + nu_local_free))
-    lm_free = lm_free.unsqueeze(2)
-    mu_free = mu_free.unsqueeze(2)
-    
-    v_top_free = model(x_top_free, 0)
-    u_top_free = v_top_free
-    grad_u_free = gradient(u_top_free, x_top_free)
-    sig_top_free = stress(strain(grad_u_free), lm_free, mu_free)
-    
-    n_free = calc_normal(x_top_free)
-    T_free = torch.einsum('bij,bj->bi', sig_top_free, n_free)
-    
-    loss_free = torch.mean(T_free**2)
-    losses['free_top'] = loss_free
-    total_loss += weights['bc'] * loss_free
-    
-    # Bottom Free (Flat at z=0, n=[0,0,-1])
+    # Bottom Free
     x_bot = data['bottom'].to(device).detach().clone().requires_grad_(True)
+    E_bot, nu_bot = get_material_properties(x_bot)
+    lm_bot, mu_bot = get_lame_params_torch(E_bot, nu_bot)
+    u_bot = model(x_bot)
+    sig_bot = stress(strain(gradient(u_bot, x_bot)), lm_bot.unsqueeze(2), mu_bot.unsqueeze(2))
+    T_bot = -sig_bot[:, :, 2] # Normal [0,0,-1]
+    free_bot_loss = torch.mean(T_bot**2)
+    losses['free_bot'] = free_bot_loss
+    total_loss += weights.get('bc', 1.0) * free_bot_loss
     
-    E_local_bot, nu_local_bot = get_material_properties(x_bot)
-    lm_bot = (E_local_bot * nu_local_bot) / ((1 + nu_local_bot) * (1 - 2 * nu_local_bot))
-    mu_bot = E_local_bot / (2 * (1 + nu_local_bot))
-    lm_bot = lm_bot.unsqueeze(2)
-    mu_bot = mu_bot.unsqueeze(2)
-    
-    v_bot = model(x_bot, 0)
-    u_bot = v_bot
-    grad_u_bot = gradient(u_bot, x_bot)
-    sig_bot = stress(strain(grad_u_bot), lm_bot, mu_bot)
-    
-    # Normal is [0, 0, -1]
-    T_bot = -sig_bot[:, :, 2] 
-    loss_bot = torch.mean(T_bot**2)
-    losses['free_bot'] = loss_bot
-    total_loss += weights['bc'] * loss_bot
-    
-    # --- 4. Supervised Data Loss (Hybrid/Parametric) ---
-    if 'x_data' in data and 'u_data' in data:
-        x_data = data['x_data'].to(device)
-        u_data = data['u_data'].to(device)
+    # --- 4. Interface Continuity ---
+    for i in [1, 2]:
+        key = f'interface{i}'
+        x_if = data[key].to(device).detach().clone().requires_grad_(True)
         
-        # Predict v directly (Stress Potential)
-        v_pred = model(x_data, 0)
-        E_data = x_data[:, 3:4]
+        # Traction Continuity: sigma_zz_l = sigma_zz_u
+        e1, e2, e3 = x_if[:, 3:4], x_if[:, 4:5], x_if[:, 5:6]
+        e_l = e1 if i==1 else e2
+        e_u = e2 if i==1 else e3
         
-        # Ground truth mapping: v_target = u_data * E.
-        v_target = u_data * E_data
+        # nu assumed constant 0.3
+        lm_l, mu_l = get_lame_params_torch(e_l, nu_int[0])
+        lm_u, mu_u = get_lame_params_torch(e_u, nu_int[0])
         
-        loss_data = torch.mean((v_pred - v_target)**2)
-        losses['data'] = loss_data
+        # Decomposed networks for clean gradients without mask interference
+        u_l_func = model(x_if, layer_idx=i)
+        u_u_func = model(x_if, layer_idx=i+1)
         
-        # specific weight for data or default high weight
-        w_data = weights.get('data', 1.0) 
-        total_loss += w_data * loss_data
-    
+        grad_if_l = gradient(u_l_func, x_if)
+        grad_if_u = gradient(u_u_func, x_if)
+        
+        eps_l = strain(grad_if_l)
+        eps_u = strain(grad_if_u)
+        
+        t_l = stress(eps_l, lm_l.unsqueeze(2), mu_l.unsqueeze(2))[:, :, 2]
+        t_u = stress(eps_u, lm_u.unsqueeze(2), mu_u.unsqueeze(2))[:, :, 2]
+        
+        loss_if_t = torch.mean((t_l - t_u)**2)
+        losses[f'interface_traction_{i}'] = loss_if_t
+        total_loss += weights.get('interface_traction', 50.0) * loss_if_t
+        
+        # Displacement Continuity
+        loss_if_u = torch.mean((u_l_func - u_u_func)**2)
+        losses[f'interface_u_{i}'] = loss_if_u
+        total_loss += weights.get('interface_u', 50.0) * loss_if_u
+
+    losses['energy'] = torch.tensor(0.0).to(device)
     losses['total'] = total_loss
     return total_loss, losses
+
+def get_lame_params_torch(E, nu):
+    lm = (E * nu) / ((1 + nu) * (1 - 2 * nu))
+    mu = E / (2 * (1 + nu))
+    return lm, mu
 
 def compute_residuals(model, data, device):
     residuals = {}
