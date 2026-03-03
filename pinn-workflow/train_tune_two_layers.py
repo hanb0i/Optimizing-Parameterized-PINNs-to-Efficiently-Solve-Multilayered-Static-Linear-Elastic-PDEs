@@ -121,7 +121,7 @@ def _build_case_dataset(
     impact_seed: int,
     randomize_impact_params: bool,
     dataset_mode: str,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     X, Y, Z = np.meshgrid(x_nodes, y_nodes, z_nodes, indexing="ij")
     if dataset_mode == "top":
         # Only keep top-surface nodes (z = H) to directly optimize the benchmark metric.
@@ -130,9 +130,18 @@ def _build_case_dataset(
         Zt = Z[:, :, -1]
         pts = np.stack([Xt.ravel(), Yt.ravel(), Zt.ravel()], axis=1).astype(np.float32, copy=False)
         u_out = np.asarray(u_grid, dtype=np.float32)[:, :, -1, :].reshape(-1, 3)
+        uz = u_out[:, 2]
+        denom = float(np.max(np.abs(uz))) if uz.size else 0.0
     else:
         pts = np.stack([X.ravel(), Y.ravel(), Z.ravel()], axis=1).astype(np.float32, copy=False)
         u_out = np.asarray(u_grid, dtype=np.float32).reshape(-1, 3)
+        uz_top = np.asarray(u_grid, dtype=np.float32)[:, :, -1, 2]
+        denom = float(np.max(np.abs(uz_top))) if uz_top.size else 0.0
+
+    # Per-case normalization: weight squared-error by 1/denom^2 so each case contributes
+    # roughly equally in *relative* terms (benchmark uses relative errors).
+    denom = max(denom, 1e-8)
+    w_case = np.float32(1.0 / (denom * denom))
 
     if randomize_impact_params:
         rng = np.random.default_rng(int(impact_seed) & 0xFFFFFFFF)
@@ -156,7 +165,8 @@ def _build_case_dataset(
     params_rep = np.repeat(params, pts.shape[0], axis=0)
     x_in = np.concatenate([pts, params_rep, r, mu, v0], axis=1).astype(np.float32, copy=False)
 
-    return x_in, u_out
+    w_sample = np.full((x_in.shape[0], 1), w_case, dtype=np.float32)
+    return x_in, u_out, w_sample
 
 
 def _sample_cases(
@@ -321,11 +331,12 @@ def main() -> None:
     else:
         val_set = _sample_cases(rng, int(args.val_cases), include_extremes=False)
 
-    case_data_cache: dict[str, tuple[torch.Tensor, torch.Tensor]] = {}
+    case_data_cache: dict[str, tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = {}
 
-    def build_dataset(cases: list[Case2L]) -> tuple[torch.Tensor, torch.Tensor]:
+    def build_dataset(cases: list[Case2L]) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         x_list: list[torch.Tensor] = []
         u_list: list[torch.Tensor] = []
+        w_list: list[torch.Tensor] = []
         for c in cases:
             key = _case_key(c, ne=int(args.ne), use_soft_mask=use_soft_mask)
             cached = case_data_cache.get(key)
@@ -340,7 +351,7 @@ def main() -> None:
                 )
                 # Stable seed per case (independent of Python's randomized hash()).
                 seed = int.from_bytes(key.encode("utf-8"), "little", signed=False) % (2**32)
-                x_in, u_out = _build_case_dataset(
+                x_in, u_out, w_sample = _build_case_dataset(
                     x_nodes,
                     y_nodes,
                     z_nodes,
@@ -350,13 +361,22 @@ def main() -> None:
                     randomize_impact_params=bool(int(args.randomize_impact_params)),
                     dataset_mode=dataset_mode,
                 )
-                cached = (torch.tensor(x_in, dtype=torch.float32), torch.tensor(u_out, dtype=torch.float32))
+                cached = (
+                    torch.tensor(x_in, dtype=torch.float32),
+                    torch.tensor(u_out, dtype=torch.float32),
+                    torch.tensor(w_sample, dtype=torch.float32),
+                )
                 case_data_cache[key] = cached
             x_list.append(cached[0])
             u_list.append(cached[1])
+            w_list.append(cached[2])
         if not x_list:
-            return torch.zeros((0, 10), dtype=torch.float32), torch.zeros((0, 3), dtype=torch.float32)
-        return torch.cat(x_list, dim=0), torch.cat(u_list, dim=0)
+            return (
+                torch.zeros((0, 10), dtype=torch.float32),
+                torch.zeros((0, 3), dtype=torch.float32),
+                torch.zeros((0, 1), dtype=torch.float32),
+            )
+        return torch.cat(x_list, dim=0), torch.cat(u_list, dim=0), torch.cat(w_list, dim=0)
 
     opt = torch.optim.AdamW(pinn.parameters(), lr=float(args.lr))
     # Track the best model by validation pass-rate first, then by (p90) error.
@@ -367,8 +387,8 @@ def main() -> None:
     for round_idx in range(int(args.max_rounds)):
         print(f"\n=== Round {round_idx+1}/{int(args.max_rounds)} ===")
         t0 = time.time()
-        x_train, u_train = build_dataset(train_set)
-        ds = TensorDataset(x_train, u_train)
+        x_train, u_train, w_train = build_dataset(train_set)
+        ds = TensorDataset(x_train, u_train, w_train)
         dl = DataLoader(ds, batch_size=int(args.batch_size), shuffle=True, drop_last=False)
         print(f"Dataset: {len(ds)} points from {len(train_set)} cases (build {time.time()-t0:.1f}s)")
 
@@ -391,9 +411,10 @@ def main() -> None:
             pinn.train()
             loss_sum = 0.0
             n_seen = 0
-            for xb, ub in dl:
+            for xb, ub, wb in dl:
                 xb = xb.to(device)
                 ub = ub.to(device)
+                wb = wb.to(device)
                 opt.zero_grad(set_to_none=True)
                 v = pinn(xb)
                 u_pred = physics.decode_u(v, xb)
@@ -413,10 +434,10 @@ def main() -> None:
                 if dataset_mode == "top":
                     # Directly optimize u_z on the top surface (benchmark metric).
                     # Dataset is already top-only; keep patch emphasis.
-                    loss = torch.mean(w * (err[:, 2:3] ** 2))
+                    loss = torch.mean(wb * w * (err[:, 2:3] ** 2))
                 else:
                     se = (err[:, 0:1] ** 2) + (err[:, 1:2] ** 2) + (w_uz * (err[:, 2:3] ** 2))
-                    loss = torch.mean(w * se)
+                    loss = torch.mean(wb * w * se)
                 loss.backward()
                 opt.step()
 
