@@ -69,6 +69,8 @@ def main() -> None:
     ap.add_argument("--nu", type=float, default=float(getattr(config, "NU_FIXED", 0.3)))
     ap.add_argument("--p0", type=float, default=float(getattr(config, "p0", 1.0)))
     ap.add_argument("--use_soft_mask", type=int, default=int(getattr(config, "USE_SOFT_LOAD_MASK", True)))
+    ap.add_argument("--layer_gating", default=None, help="Override config.LAYER_GATING (soft|hard).")
+    ap.add_argument("--layer_gate_beta", type=float, default=None, help="Override config.LAYER_GATE_BETA.")
     args = ap.parse_args()
 
     if int(getattr(config, "NUM_LAYERS", 2)) != 2:
@@ -76,6 +78,10 @@ def main() -> None:
 
     rng = np.random.default_rng(int(args.seed))
     device = _select_device(args.device)
+    if args.layer_gating is not None:
+        config.LAYER_GATING = str(args.layer_gating)
+    if args.layer_gate_beta is not None:
+        config.LAYER_GATE_BETA = float(args.layer_gate_beta)
 
     pinn = model.MultiLayerPINN().to(device)
     if args.model and os.path.exists(args.model):

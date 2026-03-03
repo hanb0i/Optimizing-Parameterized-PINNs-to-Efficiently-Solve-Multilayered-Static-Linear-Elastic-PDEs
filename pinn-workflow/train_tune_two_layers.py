@@ -281,6 +281,8 @@ def main() -> None:
     ap.add_argument("--p0", type=float, default=float(getattr(config, "p0", 1.0)))
     ap.add_argument("--use_soft_mask", type=int, default=int(getattr(config, "USE_SOFT_LOAD_MASK", True)))
     ap.add_argument("--cache_dir", default="pinn-workflow/fea_cache", help="FEA solution cache directory (empty disables).")
+    ap.add_argument("--layer_gating", default=None, help="Override config.LAYER_GATING (soft|hard).")
+    ap.add_argument("--layer_gate_beta", type=float, default=None, help="Override config.LAYER_GATE_BETA.")
 
     ap.add_argument("--train_cases", type=int, default=60)
     ap.add_argument("--val_cases", type=int, default=20)
@@ -315,6 +317,10 @@ def main() -> None:
     use_soft_mask = bool(int(args.use_soft_mask))
     cache_dir = str(args.cache_dir).strip() or None
     dataset_mode = str(args.dataset_mode).lower().strip()
+    if args.layer_gating is not None:
+        config.LAYER_GATING = str(args.layer_gating)
+    if args.layer_gate_beta is not None:
+        config.LAYER_GATE_BETA = float(args.layer_gate_beta)
 
     pinn = model.MultiLayerPINN().to(device)
     pinn.train()
