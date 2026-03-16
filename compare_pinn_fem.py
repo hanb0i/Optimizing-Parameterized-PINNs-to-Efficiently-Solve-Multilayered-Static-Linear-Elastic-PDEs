@@ -41,9 +41,37 @@ def main():
     if not os.path.exists(model_path):
         model_path = "pinn_model.pth"
     print(f"Loading PINN from: {model_path}")
-    pinn.load_state_dict(
-        torch.load(model_path, map_location=device, weights_only=True)
-    )
+    sd = torch.load(model_path, map_location=device, weights_only=True)
+    if any(k.startswith("layer1.") for k in sd.keys()):
+        mapped = {}
+        for k, v in sd.items():
+            if k.startswith("layer1."):
+                mapped[f"layer.{k[len('layer1.') :]}"] = v
+        sd = mapped
+    elif any(k.startswith("net.") for k in sd.keys()):
+        mapped = {}
+        for k, v in sd.items():
+            if k.startswith("net."):
+                mapped[f"layer.{k}"] = v
+        sd = mapped
+    target_sd = pinn.state_dict()
+    w_key = "layer.net.0.weight"
+    if w_key in sd and w_key in target_sd:
+        src_w = sd[w_key]
+        tgt_w = target_sd[w_key]
+        if src_w.shape != tgt_w.shape:
+            adapted = torch.zeros_like(tgt_w)
+            n = min(int(src_w.shape[1]), int(tgt_w.shape[1]))
+            adapted[:, :n] = src_w[:, :n]
+            sd[w_key] = adapted
+    filtered = {}
+    for k, v in sd.items():
+        tv = target_sd.get(k, None)
+        if tv is None:
+            continue
+        if hasattr(v, "shape") and hasattr(tv, "shape") and tuple(v.shape) == tuple(tv.shape):
+            filtered[k] = v
+    pinn.load_state_dict(filtered, strict=False)
     pinn.eval()
     print("PINN model loaded")
 

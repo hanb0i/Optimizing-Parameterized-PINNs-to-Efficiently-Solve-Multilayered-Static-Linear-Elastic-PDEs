@@ -25,34 +25,34 @@ def _load_model(model_path, device):
     if os.path.exists(model_path):
         sd = torch.load(model_path, map_location=device, weights_only=True)
         target_sd = pinn.state_dict()
+        if any(k.startswith("layer1.") for k in sd.keys()):
+            mapped = {}
+            for k, v in sd.items():
+                if k.startswith("layer1."):
+                    mapped[f"layer.{k[len('layer1.') :]}"] = v
+            sd = mapped
+        elif any(k.startswith("net.") for k in sd.keys()):
+            mapped = {}
+            for k, v in sd.items():
+                if k.startswith("net."):
+                    mapped[f"layer.{k}"] = v
+            sd = mapped
+
         w_key = "layer.net.0.weight"
         if w_key in sd and w_key in target_sd:
             src_w = sd[w_key]
             tgt_w = target_sd[w_key]
-            if src_w.shape != tgt_w.shape and src_w.shape[0] == tgt_w.shape[0]:
-                if src_w.shape[1] == 8 and tgt_w.shape[1] == 11:
-                    adapted = torch.zeros_like(tgt_w)
-                    adapted[:, 0:5] = src_w[:, 0:5]
-                    adapted[:, 8:11] = src_w[:, 5:8]
-                    sd[w_key] = adapted
-                elif src_w.shape[1] == 10 and tgt_w.shape[1] == 11:
-                    adapted = torch.zeros_like(tgt_w)
-                    adapted[:, 0:7] = src_w[:, 0:7]
-                    adapted[:, 8:11] = src_w[:, 7:10]
-                    sd[w_key] = adapted
+            if src_w.shape != tgt_w.shape:
+                adapted = torch.zeros_like(tgt_w)
+                n = min(int(src_w.shape[1]), int(tgt_w.shape[1]))
+                adapted[:, :n] = src_w[:, :n]
+                sd[w_key] = adapted
         pinn.load_state_dict(sd, strict=False)
         print(f"Model loaded from {model_path}")
     else:
         print(f"Warning: {model_path} not found.")
     pinn.eval()
     return pinn
-
-
-def _u_from_v(v, E_val, thickness):
-    alpha = float(getattr(config, "THICKNESS_COMPLIANCE_ALPHA", 0.0))
-    t_scale = 1.0 if alpha == 0.0 else (float(config.H) / max(1e-8, float(thickness))) ** alpha
-    e_pow = float(getattr(config, "E_COMPLIANCE_POWER", 1.0))
-    return (v / (float(E_val) ** e_pow)) * t_scale
 
 
 def _ref_params():
@@ -88,8 +88,8 @@ def _pinn_predict_top(pinn, device, X_flat, Y_flat, thickness, E_val):
     V0_flat = np.ones_like(X_flat) * v0_ref
     pts = np.stack([X_flat, Y_flat, Z_flat, E_flat, T_flat, R_flat, MU_flat, V0_flat], axis=1)
     with torch.no_grad():
-        v = pinn(torch.tensor(pts, dtype=torch.float32).to(device)).cpu().numpy()
-    return _u_from_v(v, E_val, thickness)
+        u = pinn(torch.tensor(pts, dtype=torch.float32).to(device)).cpu().numpy()
+    return u
 
 
 def verify_parametric(pinn, device, viz_dir):
@@ -192,8 +192,7 @@ def verify_parametric(pinn, device, viz_dir):
             pts_c = np.stack([x_in, y_in, z_in, E_in, T_in, R_in, MU_in, V0_in], axis=1)
 
             with torch.no_grad():
-                v_c = pinn(torch.tensor(pts_c, dtype=torch.float32).to(device)).cpu().numpy()
-            u_c = _u_from_v(v_c, E_val, t_val)
+                u_c = pinn(torch.tensor(pts_c, dtype=torch.float32).to(device)).cpu().numpy()
             UZ_pinn_c = u_c[:, 2].reshape(nz_c, nx)
 
             # FEA cross-section: interpolate from 3D FEA data

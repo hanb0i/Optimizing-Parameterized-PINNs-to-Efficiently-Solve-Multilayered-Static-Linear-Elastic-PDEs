@@ -109,7 +109,7 @@ def load_fem_supervision_data(n_points_per_e=None, e_values=None, thickness_valu
             total_points = len(x_flat)
             indices = np.random.choice(total_points, size=min(n_points_per_e, total_points), replace=False)
             
-            # Create input points with E and thickness values
+            # Create input points with E and thickness values (2-layer layout)
             r_min, r_max = _get_restitution_range()
             mu_min, mu_max = _get_friction_range()
             v0_min, v0_max = _get_impact_velocity_range()
@@ -117,16 +117,23 @@ def load_fem_supervision_data(n_points_per_e=None, e_values=None, thickness_valu
             friction = np.ones(len(indices)) * (0.5 * (mu_min + mu_max))
             impact_velocity = np.ones(len(indices)) * (0.5 * (v0_min + v0_max))
 
-            x_sampled = np.stack([
-                x_flat[indices],
-                y_flat[indices],
-                z_flat[indices],
-                np.ones(len(indices)) * E_val,
-                np.ones(len(indices)) * thickness,
-                restitution,
-                friction,
-                impact_velocity
-            ], axis=1)
+            t1 = 0.5 * thickness
+            t2 = thickness - t1
+            x_sampled = np.stack(
+                [
+                    x_flat[indices],
+                    y_flat[indices],
+                    z_flat[indices],
+                    np.ones(len(indices)) * E_val,
+                    np.ones(len(indices)) * t1,
+                    np.ones(len(indices)) * E_val,
+                    np.ones(len(indices)) * t2,
+                    restitution,
+                    friction,
+                    impact_velocity,
+                ],
+                axis=1,
+            )
             
             u_sampled = u_flat[indices]
             
@@ -141,7 +148,7 @@ def load_fem_supervision_data(n_points_per_e=None, e_values=None, thickness_valu
 
 
 def sample_domain(n, z_min=0.0, z_max=0.1):
-    # n points, 12D: [x, y, z, E1, E2, E3, t1, t2, t3, r, mu, v_0]
+    # n points, 10D: [x, y, z, E1, t1, E2, t2, r, mu, v0]
     e_min, e_max = _get_e_range()
     t_min, t_max = _get_thickness_range()
     r_min, r_max = _get_restitution_range()
@@ -153,20 +160,18 @@ def sample_domain(n, z_min=0.0, z_max=0.1):
     
     e1 = torch.rand(n, 1) * (e_max - e_min) + e_min
     e2 = torch.rand(n, 1) * (e_max - e_min) + e_min
-    e3 = torch.rand(n, 1) * (e_max - e_min) + e_min
     
     t1 = torch.rand(n, 1) * (t_max - t_min) + t_min
     t2 = torch.rand(n, 1) * (t_max - t_min) + t_min
-    t3 = torch.rand(n, 1) * (t_max - t_min) + t_min
     
     r = torch.rand(n, 1) * (r_max - r_min) + r_min
     mu = torch.rand(n, 1) * (mu_max - mu_min) + mu_min
     v0 = torch.rand(n, 1) * (v0_max - v0_min) + v0_min
     
-    t_total = t1 + t2 + t3
+    t_total = t1 + t2
     z = torch.rand(n, 1) * t_total
     
-    return torch.cat([x, y, z, e1, e2, e3, t1, t2, t3, r, mu, v0], dim=1)
+    return torch.cat([x, y, z, e1, t1, e2, t2, r, mu, v0], dim=1)
 
 def sample_domain_under_patch(n, z_min=0.0, z_max=0.1):
     pts = sample_domain(n)
@@ -186,7 +191,7 @@ def sample_domain_residual_based(n, z_min, z_max, prev_pts, prev_residuals):
     sampled_pts = prev_pts[indices]
     
     noise_scale = getattr(config, "SAMPLING_NOISE_SCALE", 0.05)
-    noise = (torch.rand(n, 12) - 0.5) * 2 * noise_scale
+    noise = (torch.rand(n, 10) - 0.5) * 2 * noise_scale
     # Scale noise by range for each dimension
     # [Lx, Ly, t_total, E, E, E, t, t, t, r, mu, v0]
     # Simple uniform noise is fine for now as a perturbation
@@ -196,23 +201,25 @@ def sample_domain_residual_based(n, z_min, z_max, prev_pts, prev_residuals):
     new_pts[:, 0] = torch.clamp(new_pts[:, 0], 0, config.Lx)
     new_pts[:, 1] = torch.clamp(new_pts[:, 1], 0, config.Ly)
     e_min, e_max = _get_e_range()
-    new_pts[:, 3:6] = torch.clamp(new_pts[:, 3:6], e_min, e_max)
+    new_pts[:, 3] = torch.clamp(new_pts[:, 3], e_min, e_max)
+    new_pts[:, 5] = torch.clamp(new_pts[:, 5], e_min, e_max)
     t_min, t_max = _get_thickness_range()
-    new_pts[:, 6:9] = torch.clamp(new_pts[:, 6:9], t_min, t_max)
+    new_pts[:, 4] = torch.clamp(new_pts[:, 4], t_min, t_max)
+    new_pts[:, 6] = torch.clamp(new_pts[:, 6], t_min, t_max)
     r_min, r_max = _get_restitution_range()
-    new_pts[:, 9] = torch.clamp(new_pts[:, 9], r_min, r_max)
+    new_pts[:, 7] = torch.clamp(new_pts[:, 7], r_min, r_max)
     mu_min, mu_max = _get_friction_range()
-    new_pts[:, 10] = torch.clamp(new_pts[:, 10], mu_min, mu_max)
+    new_pts[:, 8] = torch.clamp(new_pts[:, 8], mu_min, mu_max)
     v0_min, v0_max = _get_impact_velocity_range()
-    new_pts[:, 11] = torch.clamp(new_pts[:, 11], v0_min, v0_max)
+    new_pts[:, 9] = torch.clamp(new_pts[:, 9], v0_min, v0_max)
     
-    t_total = new_pts[:, 6] + new_pts[:, 7] + new_pts[:, 8]
+    t_total = new_pts[:, 4] + new_pts[:, 6]
     new_pts[:, 2] = torch.clamp(new_pts[:, 2], 0.0, t_total)
     
     return new_pts
 
 def sample_boundaries(n):
-    # n points, 12D [x,y,z,E1,E2,E3,t1,t2,t3,r,mu,v0]
+    # n points, 10D [x,y,z,E1,t1,E2,t2,r,mu,v0]
     pts = sample_domain(n)
     # Pick faces: 0:x=0, 1:x=Lx, 2:y=0, 3:y=Ly
     faces = torch.randint(0, 4, (n,))
@@ -226,7 +233,7 @@ def sample_boundaries(n):
 def sample_top_load(n):
     pts = sample_domain_under_patch(n)
     # z = total thickness
-    pts[:, 2] = pts[:, 6] + pts[:, 7] + pts[:, 8]
+    pts[:, 2] = pts[:, 4] + pts[:, 6]
     return pts
 
 def sample_top_free(n):
@@ -240,7 +247,7 @@ def sample_top_free(n):
             pts[i, 1] = torch.rand(1) * config.Ly
             if not (x_min < pts[i, 0] < x_max and y_min < pts[i, 1] < y_max):
                 break
-    pts[:, 2] = pts[:, 6] + pts[:, 7] + pts[:, 8]
+    pts[:, 2] = pts[:, 4] + pts[:, 6]
     return pts
 
 def sample_bottom(n):
@@ -248,12 +255,9 @@ def sample_bottom(n):
     pts[:, 2] = 0.0
     return pts
 
-def sample_interface(n, interface_idx=1):
+def sample_interface(n):
     pts = sample_domain(n)
-    if interface_idx == 1:
-        pts[:, 2] = pts[:, 6] # z = t1
-    else:
-        pts[:, 2] = pts[:, 6] + pts[:, 7] # z = t1 + t2
+    pts[:, 2] = pts[:, 4]  # z = t1
     return pts
 
 def get_data(prev_data=None, residuals=None):
@@ -274,8 +278,7 @@ def get_data(prev_data=None, residuals=None):
     bottom = sample_bottom(config.N_BOTTOM)
     
     # 3. Interfaces (Physics Anchors)
-    interface1 = sample_interface(2000, 1) # Layer 1-2
-    interface2 = sample_interface(2000, 2) # Layer 2-3
+    interface1 = sample_interface(2000)
     
     return {
         'interior': [interior],
@@ -284,5 +287,4 @@ def get_data(prev_data=None, residuals=None):
         'top_free': top_free,
         'bottom': bottom,
         'interface1': interface1,
-        'interface2': interface2
     }

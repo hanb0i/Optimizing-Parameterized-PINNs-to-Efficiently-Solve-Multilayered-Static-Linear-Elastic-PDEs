@@ -15,6 +15,21 @@ import matplotlib.pyplot as plt
 def _load_compatible_state_dict(pinn, ckpt_path, device):
     sd = torch.load(ckpt_path, map_location=device, weights_only=True)
     target_sd = pinn.state_dict()
+
+    # Map legacy multi-layer keys into the single-net layout.
+    if any(k.startswith("layer1.") for k in sd.keys()):
+        mapped = {}
+        for k, v in sd.items():
+            if k.startswith("layer1."):
+                mapped[f"layer.{k[len('layer1.') :]}"] = v
+        sd = mapped
+    elif any(k.startswith("net.") for k in sd.keys()):
+        mapped = {}
+        for k, v in sd.items():
+            if k.startswith("net."):
+                mapped[f"layer.{k}"] = v
+        sd = mapped
+
     w_key = "layer.net.0.weight"
     if w_key in sd and w_key in target_sd:
         src_w = sd[w_key]
@@ -28,8 +43,25 @@ def _load_compatible_state_dict(pinn, ckpt_path, device):
              min_dim = min(src_w.shape[1], tgt_w.shape[1])
              new_w[:, :min_dim] = src_w[:, :min_dim]
              sd[w_key] = new_w
-    missing, unexpected = pinn.load_state_dict(sd, strict=False)
+    # Drop incompatible tensors (e.g., when layer depth/width changed).
+    filtered = {}
+    dropped = 0
+    for k, v in sd.items():
+        tv = target_sd.get(k, None)
+        if tv is None:
+            continue
+        if hasattr(v, "shape") and hasattr(tv, "shape") and tuple(v.shape) == tuple(tv.shape):
+            filtered[k] = v
+        else:
+            dropped += 1
+    missing, unexpected = pinn.load_state_dict(filtered, strict=False)
     print(f"Warm-start loaded from {ckpt_path}")
+    if missing:
+        print(f"  Missing keys: {len(missing)}")
+    if unexpected:
+        print(f"  Unexpected keys: {len(unexpected)}")
+    if dropped:
+        print(f"  Dropped incompatible tensors: {dropped}")
 
 def get_loss_weights(epoch, use_hard_bc=True):
     weights = dict(config.WEIGHTS)
@@ -96,20 +128,19 @@ def train():
         Z_fea = fem_data['z']
         U_fea = fem_data['u']
         
-        # Prepare FEM evaluation grid (12D: x,y,z, E1,E2,E3, t1,t2,t3, r,mu,v0)
+        # Prepare FEM evaluation grid (10D: x,y,z, E1,t1,E2,t2, r,mu,v0)
         pts_fea = np.stack([X_fea.ravel(), Y_fea.ravel(), Z_fea.ravel()], axis=1)
         num_pts = pts_fea.shape[0]
         
-        # We assume common sandwich proportions for evaluation if not specified
-        # E1=E3=Skin, E2=Core
+        # Two-layer defaults for evaluation if not specified
         E1 = config.E1_vals[0]
         E2 = config.E2_vals[0]
-        E3 = config.E3_vals[0]
         t1 = config.t1_vals[0]
         t2 = config.t2_vals[0]
-        t3 = config.t3_vals[0]
-        
-        params = np.array([[E1, E2, E3, t1, t2, t3, 0.5, 0.3, 1.0]])
+        r_ref = float(getattr(config, "RESTITUTION_REF", 0.5))
+        mu_ref = float(getattr(config, "FRICTION_REF", 0.3))
+        v0_ref = float(getattr(config, "IMPACT_VELOCITY_REF", 1.0))
+        params = np.array([[E1, t1, E2, t2, r_ref, mu_ref, v0_ref]])
         params_tiled = np.tile(params, (num_pts, 1))
         
         pts_fea = np.hstack([pts_fea, params_tiled])
@@ -145,7 +176,6 @@ def train():
         'load': [],
         'energy': [],
         'interface1': [],
-        'interface2': [],
         'impact_invariance': [],
         'impact_contact': [],
         'friction_coulomb': [],
@@ -164,7 +194,6 @@ def train():
         'load': [],
         'energy': [],
         'interface1': [],
-        'interface2': [],
         'impact_invariance': [],
         'impact_contact': [],
         'friction_coulomb': [],
@@ -214,8 +243,7 @@ def train():
         adam_history['free_bot'].append(losses['free_bot'].item())
         adam_history['load'].append(losses['load'].item())
         adam_history['energy'].append(losses['energy'].item())
-        adam_history['interface1'].append(losses.get('interface_u_1', torch.tensor(0.0)).item())
-        adam_history['interface2'].append(losses.get('interface_u_2', torch.tensor(0.0)).item())
+        adam_history['interface1'].append(losses.get('interface_traction_1', torch.tensor(0.0)).item())
         adam_history['impact_invariance'].append(losses.get('impact_invariance', torch.tensor(0.0)).item())
         adam_history['impact_contact'].append(losses.get('impact_contact', torch.tensor(0.0)).item())
         adam_history['friction_coulomb'].append(losses.get('friction_coulomb', torch.tensor(0.0)).item())
@@ -287,8 +315,7 @@ def train():
         lbfgs_history['free_bot'].append(losses['free_bot'].item())
         lbfgs_history['load'].append(losses['load'].item())
         lbfgs_history['energy'].append(losses['energy'].item())
-        lbfgs_history['interface1'].append(losses.get('interface_u_1', torch.tensor(0.0)).item())
-        lbfgs_history['interface2'].append(losses.get('interface_u_2', torch.tensor(0.0)).item())
+        lbfgs_history['interface1'].append(losses.get('interface_traction_1', torch.tensor(0.0)).item())
         lbfgs_history['impact_invariance'].append(losses.get('impact_invariance', torch.tensor(0.0)).item())
         lbfgs_history['impact_contact'].append(losses.get('impact_contact', torch.tensor(0.0)).item())
         lbfgs_history['friction_coulomb'].append(losses.get('friction_coulomb', torch.tensor(0.0)).item())

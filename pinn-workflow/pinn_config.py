@@ -38,27 +38,26 @@ def get_domain_height(x, y):
         return H - dent
     return torch.full_like(x, H)
 
-# 3-Layer Geometry (Sandwich Plate)
-# Top/Bot = 0.02, Core = 0.06
-LAYER_THICKNESSES = [0.02, 0.06, 0.02]
-# Ratios relative to total local thickness: [0.2, 0.8]
-LAYER_Z_RATIOS = [0.2, 0.8] 
+# 2-Layer Geometry (Laminate Plate)
+NUM_LAYERS = 2
+# Default thickness split (bottom/top) for non-parametric utilities.
+LAYER_THICKNESSES = [0.05, 0.05]
+# Ratios relative to total local thickness: [t1 / T]
+LAYER_Z_RATIOS = [0.5]
 LAYER_Z_RANGES = [
-    [0.0, 0.02],          # Bottom Face Sheets (Wait, Z=0 is usually bottom)
-    [0.02, 0.08],         # Core
-    [0.08, 0.1]           # Top Face Sheets
+    [0.0, 0.05],  # Bottom layer
+    [0.05, 0.1],  # Top layer
 ]
 # Material Properties per Layer
-LAYER_E_VALS = [10.0, 1.0, 10.0] # Stiff-Soft-Stiff
-LAYER_NU_VALS = [0.3, 0.3, 0.3]
+LAYER_E_VALS = [10.0, 1.0]
+LAYER_NU_VALS = [0.3, 0.3]
 
-# Parameterized PINN settings unused in Phase 5
-E_vals = [1.0] 
+# Parameterized PINN settings for 2-layer input
+# Params: [E1, t1, E2, t2, r, mu, v0] = 7 params
+E_vals = [1.0]
 nu_vals = [0.3]
-# Parameterized PINN settings for 12D Multi-Layer
-# Params: [E1, E2, E3, t1, t2, t3, r, mu, v0] = 9 params
 E_RANGE = [1.0, 20.0]
-THICKNESS_RANGE = [0.01, 0.08] # Per-layer range
+THICKNESS_RANGE = [0.01, 0.08]  # Per-layer range
 RESTITUTION_RANGE = [0.1, 0.9]
 FRICTION_RANGE = [0.0, 0.6]
 IMPACT_VELOCITY_RANGE = [0.2, 2.0]
@@ -66,11 +65,9 @@ IMPACT_VELOCITY_RANGE = [0.2, 2.0]
 # Baseline values for evaluation
 E1_vals = [10.0]
 E2_vals = [1.0]
-E3_vals = [10.0]
-t1_vals = [0.02]
-t2_vals = [0.06]
-t3_vals = [0.02]
-PARAM_DIM = 9 
+t1_vals = [0.05]
+t2_vals = [0.05]
+PARAM_DIM = 7
 
 # ... (Reference values) ...
 RESTITUTION_REF = 0.5
@@ -78,8 +75,8 @@ FRICTION_REF = 0.3
 IMPACT_VELOCITY_REF = 1.0
 
 # --- Parametric compliance scaling ---
-THICKNESS_COMPLIANCE_ALPHA = 1.6 
-E_COMPLIANCE_POWER = 1.0        
+THICKNESS_COMPLIANCE_ALPHA = 1.6
+E_COMPLIANCE_POWER = 1.0
 
 def get_lame_params(E, nu):
     lm = (E * nu) / ((1 + nu) * (1 - 2 * nu))
@@ -107,6 +104,8 @@ LOAD_PATCH_Y = [Ly/3, 2*Ly/3]
 # --- Network Architecture ---
 LAYERS = 6
 NEURONS = 64
+USE_MIXED_FORMULATION = False
+INTERFACE_FEATURE_BETA = 200.0
 
 # --- Training Hyperparameters ---
 LEARNING_RATE = 1e-3
