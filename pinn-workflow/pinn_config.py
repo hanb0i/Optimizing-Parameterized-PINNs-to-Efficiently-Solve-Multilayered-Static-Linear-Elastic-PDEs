@@ -5,21 +5,23 @@ import numpy as np
 Lx = 1.0
 Ly = 1.0
 H = 0.1  # Total height (baseline thickness)
-# Single layer (homogeneous material)
-# z goes from 0 to H
-Layer_Interfaces = [0.0, H]
+# Two layers (homogeneous per layer); z goes from 0 to H.
+NUM_LAYERS = 2
+LAYER_THICKNESSES = [H / 2.0, H / 2.0]
+Layer_Interfaces = [0.0, LAYER_THICKNESSES[0], H]
 
 # --- Material Properties ---
 # Young's Modulus (E) and Poisson's Ratio (nu)
-# Single layer to match FEM
+# Baseline single-material values to match FEM.
 E_vals = [1.0] # Normalized
 nu_vals = [0.3]
 # Parameterized PINN settings (do not alter baseline values)
 E_RANGE = [1.0, 10.0]
-THICKNESS_RANGE = [0.05, 0.15]
+THICKNESS_RANGE = [H, H]
 RESTITUTION_RANGE = [0.1, 0.9]
 FRICTION_RANGE = [0.0, 0.6]
 IMPACT_VELOCITY_RANGE = [0.2, 2.0]
+# Params: [E1, E2, r, mu, v0]
 PARAM_DIM = 5
 
 # Optional: explicit E sweep values for `verify_parametric_pinn.py`.
@@ -74,6 +76,7 @@ LOAD_PATCH_Y = [Ly/3, 2*Ly/3]  # [0.333, 0.667]
 # --- Network Architecture ---
 LAYERS = 4
 NEURONS = 64
+INTERFACE_FEATURE_BETA = 20.0
 
 # --- Training Hyperparameters ---
 LEARNING_RATE = 1e-3
@@ -92,7 +95,7 @@ WEIGHTS = {
     'friction_coulomb': 0.001,  # Reduced to preserve FEA parity in no-supervision mode
     'friction_stick': 0.0005,   # Reduced to preserve FEA parity in no-supervision mode
     'interface_u': 1.0,
-    'data': 1.0
+    'data': 5.0
 }
 
 # Loss weight ramp: load-first to raise displacement while preserving shape.
@@ -110,7 +113,10 @@ N_SIDES = 2000  # Clamped side faces
 N_TOP_LOAD = 6000  # Load patch (more points to boost displacement)
 N_TOP_FREE = 2000  # Top free surface
 N_BOTTOM = 2000  # Bottom free surface
+N_INTERFACE = 2000  # Exact points on the layer interface
 UNDER_PATCH_FRACTION = 0.95 # More interior points focus under the load patch
+INTERFACE_SAMPLE_FRACTION = 0.2
+INTERFACE_BAND = 0.05 * H
 
 #Resampling/perturbation control
 SAMPLING_NOISE_SCALE = 0.08  # Larger perturbations widen coverage while still sampling residual-rich zones.
@@ -126,8 +132,8 @@ FOURIER_SCALE = 1.0 # Standard deviation for frequency sampling
 # Hybrid / Parametric Training Data
 N_DATA_POINTS = 9000
 DATA_E_VALUES = [1.0, 5.0, 10.0]
-DATA_THICKNESS_VALUES = [0.05, 0.1, 0.15]
-USE_SUPERVISION_DATA = False
+DATA_THICKNESS_VALUES = [H]
+USE_SUPERVISION_DATA = True
 
 # --- Explicit impact/friction physics controls ---
 # When enabled, restitution/friction influence boundary losses directly.

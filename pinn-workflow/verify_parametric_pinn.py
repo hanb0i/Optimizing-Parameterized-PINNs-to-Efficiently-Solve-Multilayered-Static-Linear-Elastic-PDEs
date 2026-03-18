@@ -24,22 +24,7 @@ def _load_model(model_path, device):
     pinn = model.MultiLayerPINN().to(device)
     if os.path.exists(model_path):
         sd = torch.load(model_path, map_location=device, weights_only=True)
-        target_sd = pinn.state_dict()
-        w_key = "layer.net.0.weight"
-        if w_key in sd and w_key in target_sd:
-            src_w = sd[w_key]
-            tgt_w = target_sd[w_key]
-            if src_w.shape != tgt_w.shape and src_w.shape[0] == tgt_w.shape[0]:
-                if src_w.shape[1] == 8 and tgt_w.shape[1] == 11:
-                    adapted = torch.zeros_like(tgt_w)
-                    adapted[:, 0:5] = src_w[:, 0:5]
-                    adapted[:, 8:11] = src_w[:, 5:8]
-                    sd[w_key] = adapted
-                elif src_w.shape[1] == 10 and tgt_w.shape[1] == 11:
-                    adapted = torch.zeros_like(tgt_w)
-                    adapted[:, 0:7] = src_w[:, 0:7]
-                    adapted[:, 8:11] = src_w[:, 7:10]
-                    sd[w_key] = adapted
+        sd = model.adapt_legacy_state_dict(sd, pinn.state_dict())
         pinn.load_state_dict(sd, strict=False)
         print(f"Model loaded from {model_path}")
     else:
@@ -48,11 +33,10 @@ def _load_model(model_path, device):
     return pinn
 
 
-def _u_from_v(v, E_val, thickness):
-    alpha = float(getattr(config, "THICKNESS_COMPLIANCE_ALPHA", 0.0))
-    t_scale = 1.0 if alpha == 0.0 else (float(config.H) / max(1e-8, float(thickness))) ** alpha
+def _u_from_v(v, E1_val, E2_val):
     e_pow = float(getattr(config, "E_COMPLIANCE_POWER", 1.0))
-    return (v / (float(E_val) ** e_pow)) * t_scale
+    e_scale = 0.5 * (float(E1_val) + float(E2_val))
+    return v / (e_scale ** e_pow)
 
 
 def _ref_params():
@@ -81,21 +65,21 @@ def run_fea(E_val, thickness):
 def _pinn_predict_top(pinn, device, X_flat, Y_flat, thickness, E_val):
     r_ref, mu_ref, v0_ref = _ref_params()
     Z_flat = np.ones_like(X_flat) * thickness
-    T_flat = np.ones_like(X_flat) * thickness
-    E_flat = np.ones_like(X_flat) * E_val
+    E1_flat = np.ones_like(X_flat) * E_val
+    E2_flat = np.ones_like(X_flat) * E_val
     R_flat = np.ones_like(X_flat) * r_ref
     MU_flat = np.ones_like(X_flat) * mu_ref
     V0_flat = np.ones_like(X_flat) * v0_ref
-    pts = np.stack([X_flat, Y_flat, Z_flat, E_flat, T_flat, R_flat, MU_flat, V0_flat], axis=1)
+    pts = np.stack([X_flat, Y_flat, Z_flat, E1_flat, E2_flat, R_flat, MU_flat, V0_flat], axis=1)
     with torch.no_grad():
         v = pinn(torch.tensor(pts, dtype=torch.float32).to(device)).cpu().numpy()
-    return _u_from_v(v, E_val, thickness)
+    return _u_from_v(v, E_val, E_val)
 
 
 def verify_parametric(pinn, device, viz_dir):
     os.makedirs(viz_dir, exist_ok=True)
 
-    t_targets = [0.05, 0.1, 0.15]
+    t_targets = [float(config.H)]
     E_targets = [1.0, 5.0, 10.0]
 
     nx, ny = 101, 101
@@ -185,15 +169,15 @@ def verify_parametric(pinn, device, viz_dir):
             y_in = np.ones_like(x_in) * 0.5
             z_in = Z_c.flatten()
             E_in = np.ones_like(x_in) * E_val
-            T_in = np.ones_like(x_in) * t_val
+            E2_in = np.ones_like(x_in) * E_val
             R_in = np.ones_like(x_in) * r_ref
             MU_in = np.ones_like(x_in) * mu_ref
             V0_in = np.ones_like(x_in) * v0_ref
-            pts_c = np.stack([x_in, y_in, z_in, E_in, T_in, R_in, MU_in, V0_in], axis=1)
+            pts_c = np.stack([x_in, y_in, z_in, E_in, E2_in, R_in, MU_in, V0_in], axis=1)
 
             with torch.no_grad():
                 v_c = pinn(torch.tensor(pts_c, dtype=torch.float32).to(device)).cpu().numpy()
-            u_c = _u_from_v(v_c, E_val, t_val)
+            u_c = _u_from_v(v_c, E_val, E_val)
             UZ_pinn_c = u_c[:, 2].reshape(nz_c, nx)
 
             # FEA cross-section: interpolate from 3D FEA data
