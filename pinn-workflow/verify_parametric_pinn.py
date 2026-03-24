@@ -33,11 +33,13 @@ def _load_model(model_path, device):
     return pinn
 
 
-def _u_from_v(v, E1_val, E2_val):
+def _u_from_v(v, E1_val, E2_val, thickness):
     e_pow = float(getattr(config, "E_COMPLIANCE_POWER", 1.0))
     e_scale = 0.5 * (float(E1_val) + float(E2_val))
+    alpha = float(getattr(config, "THICKNESS_COMPLIANCE_ALPHA", 0.0))
     scale = float(getattr(config, "DISPLACEMENT_COMPLIANCE_SCALE", 1.0))
-    return scale * v / (e_scale ** e_pow)
+    h_ref = float(getattr(config, "H", 1.0))
+    return scale * v / (e_scale ** e_pow) * (h_ref / max(float(thickness), 1e-8)) ** alpha
 
 
 def _ref_params():
@@ -71,16 +73,17 @@ def _pinn_predict_top(pinn, device, X_flat, Y_flat, thickness, E_val):
     R_flat = np.ones_like(X_flat) * r_ref
     MU_flat = np.ones_like(X_flat) * mu_ref
     V0_flat = np.ones_like(X_flat) * v0_ref
-    pts = np.stack([X_flat, Y_flat, Z_flat, E1_flat, E2_flat, R_flat, MU_flat, V0_flat], axis=1)
+    T_flat = np.ones_like(X_flat) * thickness
+    pts = np.stack([X_flat, Y_flat, Z_flat, E1_flat, E2_flat, T_flat, R_flat, MU_flat, V0_flat], axis=1)
     with torch.no_grad():
         v = pinn(torch.tensor(pts, dtype=torch.float32).to(device)).cpu().numpy()
-    return _u_from_v(v, E_val, E_val)
+    return _u_from_v(v, E_val, E_val, thickness)
 
 
 def verify_parametric(pinn, device, viz_dir):
     os.makedirs(viz_dir, exist_ok=True)
 
-    t_targets = [float(config.H)]
+    t_targets = [float(val) for val in getattr(config, "DATA_THICKNESS_VALUES", [float(config.H)])]
     E_targets = [1.0, 5.0, 10.0]
 
     nx, ny = 101, 101
@@ -174,11 +177,12 @@ def verify_parametric(pinn, device, viz_dir):
             R_in = np.ones_like(x_in) * r_ref
             MU_in = np.ones_like(x_in) * mu_ref
             V0_in = np.ones_like(x_in) * v0_ref
-            pts_c = np.stack([x_in, y_in, z_in, E_in, E2_in, R_in, MU_in, V0_in], axis=1)
+            T_in = np.ones_like(x_in) * t_val
+            pts_c = np.stack([x_in, y_in, z_in, E_in, E2_in, T_in, R_in, MU_in, V0_in], axis=1)
 
             with torch.no_grad():
                 v_c = pinn(torch.tensor(pts_c, dtype=torch.float32).to(device)).cpu().numpy()
-            u_c = _u_from_v(v_c, E_val, E_val)
+            u_c = _u_from_v(v_c, E_val, E_val, t_val)
             UZ_pinn_c = u_c[:, 2].reshape(nz_c, nx)
 
             # FEA cross-section: interpolate from 3D FEA data

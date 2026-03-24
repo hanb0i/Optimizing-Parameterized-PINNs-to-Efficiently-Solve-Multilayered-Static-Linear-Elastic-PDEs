@@ -22,11 +22,14 @@ def v_to_u(v, E, t=None):
 def _global_E_scale(x):
     return 0.5 * (x[:, 3:4] + x[:, 4:5])
 
+def _global_thickness(x):
+    return x[:, 5:6]
+
 def _select_E_local(x):
     z_coord = x[:, 2:3]
     e1 = x[:, 3:4]
     e2 = x[:, 4:5]
-    z_interface = float(config.Layer_Interfaces[1])
+    z_interface = 0.5 * _global_thickness(x)
     return torch.where(z_coord <= z_interface, e1, e2)
 
 def _lame_from_E(E):
@@ -124,6 +127,7 @@ def compute_loss(model, data, device, weights=None):
     # Dynamic material properties
     E_local = _select_E_local(x_int)
     E_scale = _global_E_scale(x_int)
+    t_scale = _global_thickness(x_int)
     lm, mu = _lame_from_E(E_local)
     
     v_int = model(x_int, 0)
@@ -135,11 +139,11 @@ def compute_loss(model, data, device, weights=None):
         mu_min, mu_max = getattr(config, "FRICTION_RANGE", (0.3, 0.3))
         v0_min, v0_max = getattr(config, "IMPACT_VELOCITY_RANGE", (1.0, 1.0))
         if r_max > r_min:
-            x_int_variant[:, 5:6] = torch.rand_like(x_int_variant[:, 5:6]) * (r_max - r_min) + r_min
+            x_int_variant[:, 6:7] = torch.rand_like(x_int_variant[:, 6:7]) * (r_max - r_min) + r_min
         if mu_max > mu_min:
-            x_int_variant[:, 6:7] = torch.rand_like(x_int_variant[:, 6:7]) * (mu_max - mu_min) + mu_min
+            x_int_variant[:, 7:8] = torch.rand_like(x_int_variant[:, 7:8]) * (mu_max - mu_min) + mu_min
         if v0_max > v0_min:
-            x_int_variant[:, 7:8] = torch.rand_like(x_int_variant[:, 7:8]) * (v0_max - v0_min) + v0_min
+            x_int_variant[:, 8:9] = torch.rand_like(x_int_variant[:, 8:9]) * (v0_max - v0_min) + v0_min
         v_int_variant = model(x_int_variant, 0)
         impact_invariance_loss = torch.mean((v_int - v_int_variant) ** 2)
     else:
@@ -149,7 +153,7 @@ def compute_loss(model, data, device, weights=None):
 
     # Predict displacement with a global scale so the displacement field stays single-valued
     # across the interface while constitutive response still uses local material properties.
-    u = v_int / torch.clamp(E_scale, min=1e-8)
+    u = v_to_u(v_int, E_scale, t_scale)
     
     grad_u = gradient(u, x_int)
     eps = strain(grad_u)
@@ -165,13 +169,14 @@ def compute_loss(model, data, device, weights=None):
     
     # Internal strain energy (volume integral, approximated by mean * volume)
     energy_density = 0.5 * torch.einsum('bij,bij->b', eps, sig)
-    internal_energy = energy_density.mean() * (config.Lx * config.Ly * float(config.H))
+    internal_energy = (energy_density * t_scale.squeeze(1)).mean() * (config.Lx * config.Ly)
     
     # --- 2. Dirichlet BCs (Clamped Sides) ---
     x_side = data['sides'][0].to(device)
     E_side = _global_E_scale(x_side)
+    t_side = _global_thickness(x_side)
     v_side = model(x_side, 0)
-    u_side = v_side / torch.clamp(E_side, min=1e-8)
+    u_side = v_to_u(v_side, E_side, t_side)
     bc_loss = torch.mean(u_side**2)
     losses['bc_sides'] = bc_loss
     total_loss += weights['bc'] * bc_loss
@@ -180,7 +185,7 @@ def compute_loss(model, data, device, weights=None):
     if 'interface' in data:
         x_if = data['interface'].to(device).detach().clone().requires_grad_(True)
         v_if = model(x_if, 0)
-        u_if = v_if / torch.clamp(_global_E_scale(x_if), min=1e-8)
+        u_if = v_to_u(v_if, _global_E_scale(x_if), _global_thickness(x_if))
         grad_u_if = gradient(u_if, x_if)
         eps_if = strain(grad_u_if)
         sig_if_1 = stress(eps_if, *_lame_from_E(x_if[:, 3:4]))
@@ -197,10 +202,11 @@ def compute_loss(model, data, device, weights=None):
     
     E_local_load = _select_E_local(x_top_load)
     E_scale_load = _global_E_scale(x_top_load)
+    t_load = _global_thickness(x_top_load)
     lm, mu = _lame_from_E(E_local_load)
     
     v_top = model(x_top_load, 0)
-    u_top = v_top / torch.clamp(E_scale_load, min=1e-8)
+    u_top = v_to_u(v_top, E_scale_load, t_load)
     grad_u_top = gradient(u_top, x_top_load)
     sig_top = stress(strain(grad_u_top), lm, mu)
     
@@ -214,9 +220,9 @@ def compute_loss(model, data, device, weights=None):
     if getattr(config, "USE_EXPLICIT_IMPACT_PHYSICS", False):
         # Restitution-aware normal traction:
         # lower restitution -> stronger dissipative/impact contact response.
-        restitution_local = torch.clamp(x_top_load[:, 5:6], 0.0, 1.0)
-        impact_velocity_local = torch.clamp(x_top_load[:, 7:8], min=0.0)
-        thickness_local = torch.ones_like(restitution_local) * float(config.H)
+        restitution_local = torch.clamp(x_top_load[:, 6:7], 0.0, 1.0)
+        impact_velocity_local = torch.clamp(x_top_load[:, 8:9], min=0.0)
+        thickness_local = torch.clamp(t_load, min=1e-8)
         compression = torch.relu(-u_top[:, 2:3]) / thickness_local
         gain = float(getattr(config, "IMPACT_RESTITUTION_GAIN", 0.75))
         v0_ref = float(getattr(config, "IMPACT_VELOCITY_REF", 1.0))
@@ -230,7 +236,7 @@ def compute_loss(model, data, device, weights=None):
         total_loss += weights.get('impact_contact', 0.0) * impact_contact_loss
 
         # Coulomb limit: ||T_t|| <= mu * |T_n| on loaded patch.
-        mu_local = torch.clamp(x_top_load[:, 6:7], min=0.0)
+        mu_local = torch.clamp(x_top_load[:, 7:8], min=0.0)
         tangential_mag = torch.norm(T[:, :2], dim=1, keepdim=True)
         normal_mag = torch.abs(T[:, 2:3])
         friction_limit = mu_local * normal_mag
@@ -269,10 +275,11 @@ def compute_loss(model, data, device, weights=None):
     
     E_local_free = _select_E_local(x_top_free)
     E_scale_free = _global_E_scale(x_top_free)
+    t_free = _global_thickness(x_top_free)
     lm_free, mu_free = _lame_from_E(E_local_free)
     
     v_top_free = model(x_top_free, 0)
-    u_top_free = v_top_free / torch.clamp(E_scale_free, min=1e-8)
+    u_top_free = v_to_u(v_top_free, E_scale_free, t_free)
     grad_u_free = gradient(u_top_free, x_top_free)
     sig_top_free = stress(strain(grad_u_free), lm_free, mu_free)
     T_free = sig_top_free[:, :, 2]
@@ -286,10 +293,11 @@ def compute_loss(model, data, device, weights=None):
     
     E_local_bot = _select_E_local(x_bot)
     E_scale_bot = _global_E_scale(x_bot)
+    t_bot = _global_thickness(x_bot)
     lm_bot, mu_bot = _lame_from_E(E_local_bot)
     
     v_bot = model(x_bot, 0)
-    u_bot = v_bot / torch.clamp(E_scale_bot, min=1e-8)
+    u_bot = v_to_u(v_bot, E_scale_bot, t_bot)
     grad_u_bot = gradient(u_bot, x_bot)
     sig_bot = stress(strain(grad_u_bot), lm_bot, mu_bot)
     
@@ -306,9 +314,11 @@ def compute_loss(model, data, device, weights=None):
         # Predict v directly (Stress Potential)
         v_pred = model(x_data, 0)
         E_data = _global_E_scale(x_data)
+        t_data = _global_thickness(x_data)
         
         # Ground truth mapping: v_target = u_data * E.
-        v_target = u_data * E_data
+        scale_data = compliance_scale(E_data, t_data)
+        v_target = u_data / torch.clamp(scale_data, min=1e-8)
         
         loss_data = torch.mean((v_pred - v_target)**2)
         losses['data'] = loss_data
@@ -328,10 +338,11 @@ def compute_residuals(model, data, device):
     
     E_local = _select_E_local(x_int)
     E_scale = _global_E_scale(x_int)
+    t_scale = _global_thickness(x_int)
     lm, mu = _lame_from_E(E_local)
     
     v_int = model(x_int, 0)
-    u = v_int / torch.clamp(E_scale, min=1e-8)
+    u = v_to_u(v_int, E_scale, t_scale)
     grad_u = gradient(u, x_int)
     eps = strain(grad_u)
     sig = stress(eps, lm, mu)
@@ -344,8 +355,9 @@ def compute_residuals(model, data, device):
     # --- BC Sides Residuals ---
     x_side = data['sides'][0].to(device)
     E_side = _global_E_scale(x_side)
+    t_side = _global_thickness(x_side)
     v_side = model(x_side, 0)
-    u_side = v_side / torch.clamp(E_side, min=1e-8)
+    u_side = v_to_u(v_side, E_side, t_side)
     bc_residual = torch.sqrt(torch.sum(u_side**2, dim=1))
     residuals['sides'] = bc_residual.cpu()
     
@@ -354,10 +366,11 @@ def compute_residuals(model, data, device):
     
     E_local_load = _select_E_local(x_top_load)
     E_scale_load = _global_E_scale(x_top_load)
+    t_load = _global_thickness(x_top_load)
     lm, mu = _lame_from_E(E_local_load)
     
     v_top = model(x_top_load, 0)
-    u_top = v_top / torch.clamp(E_scale_load, min=1e-8)
+    u_top = v_to_u(v_top, E_scale_load, t_load)
     grad_u_top = gradient(u_top, x_top_load)
     sig_top = stress(strain(grad_u_top), lm, mu)
     T = sig_top[:, :, 2]
@@ -376,10 +389,11 @@ def compute_residuals(model, data, device):
     
     E_local_free = _select_E_local(x_top_free)
     E_scale_free = _global_E_scale(x_top_free)
+    t_free = _global_thickness(x_top_free)
     lm_free, mu_free = _lame_from_E(E_local_free)
     
     v_top_free = model(x_top_free, 0)
-    u_top_free = v_top_free / torch.clamp(E_scale_free, min=1e-8)
+    u_top_free = v_to_u(v_top_free, E_scale_free, t_free)
     grad_u_free = gradient(u_top_free, x_top_free)
     sig_top_free = stress(strain(grad_u_free), lm_free, mu_free)
     T_free = sig_top_free[:, :, 2]
@@ -391,10 +405,11 @@ def compute_residuals(model, data, device):
     
     E_local_bot = _select_E_local(x_bot)
     E_scale_bot = _global_E_scale(x_bot)
+    t_bot = _global_thickness(x_bot)
     lm_bot, mu_bot = _lame_from_E(E_local_bot)
     
     v_bot = model(x_bot, 0)
-    u_bot = v_bot / torch.clamp(E_scale_bot, min=1e-8)
+    u_bot = v_to_u(v_bot, E_scale_bot, t_bot)
     grad_u_bot = gradient(u_bot, x_bot)
     sig_bot = stress(strain(grad_u_bot), lm_bot, mu_bot)
     T_bot = -sig_bot[:, :, 2]

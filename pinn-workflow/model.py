@@ -9,15 +9,35 @@ def _adapt_first_layer_weight(src_w, tgt_w):
 
     adapted = torch.zeros_like(tgt_w)
 
+    if src_w.shape[1] == 12 and tgt_w.shape[1] >= 12:
+        adapted[:, :12] = src_w[:, :12]
+        return adapted
+
     # Legacy semantic layout:
     # [x, y, z_hat, E, t, r, mu, v0, extra1, extra2, extra3]
-    # New semantic layout:
+    # Current semantic layout before thickness parameterization:
     # [x, y, z_hat, E1, E2, r, mu, v0, sd, |sd|, soft]
+    # New semantic layout:
+    # [x, y, z_hat, E1, E2, t, r, mu, v0, sd, |sd|, soft, zeta^3, bend]
+    if src_w.shape[1] == 11 and tgt_w.shape[1] >= 14:
+        adapted[:, 0:3] = src_w[:, 0:3]
+        adapted[:, 3:5] = src_w[:, 3:5]
+        adapted[:, 6:9] = src_w[:, 5:8]
+        adapted[:, 9:12] = src_w[:, 8:11]
+        return adapted
+
     if src_w.shape[1] == 11:
         adapted[:, 0:3] = src_w[:, 0:3]
         adapted[:, 3:4] = 0.5 * src_w[:, 3:4]
         adapted[:, 4:5] = 0.5 * src_w[:, 3:4]
         adapted[:, 5:8] = src_w[:, 5:8]
+        return adapted
+
+    if src_w.shape[1] == 10 and tgt_w.shape[1] >= 14:
+        adapted[:, 0:3] = src_w[:, 0:3]
+        adapted[:, 3:4] = 0.5 * src_w[:, 3:4]
+        adapted[:, 4:5] = 0.5 * src_w[:, 3:4]
+        adapted[:, 6:8] = src_w[:, 5:7]
         return adapted
 
     if src_w.shape[1] == 10:
@@ -67,8 +87,9 @@ class LayerNet(nn.Module):
     def __init__(self, hidden_layers=2, hidden_units=32, activation=nn.Tanh()):
         super().__init__()
         layers = []
-        # Input: x, y, z_hat + 5 normalized params (E1, E2, r, mu, v0) + 3 interface features
-        current_dim = 8 + 3
+        # Input: x, y, z_hat + 6 normalized params (E1, E2, t, r, mu, v0)
+        # + 5 derived thickness/interface features.
+        current_dim = 9 + 5
         
         layers.append(nn.Linear(current_dim, hidden_units))
         layers.append(activation)
@@ -93,14 +114,19 @@ class LayerNet(nn.Module):
         z_coord = x[:, 2:3]
         e1_param = x[:, 3:4]
         e2_param = x[:, 4:5]
-        r_param = x[:, 5:6]
-        mu_param = x[:, 6:7]
-        v0_param = x[:, 7:8]
+        t_param = x[:, 5:6]
+        r_param = x[:, 6:7]
+        mu_param = x[:, 7:8]
+        v0_param = x[:, 8:9]
         
         e_min, e_max = config.E_RANGE
         e_span = (e_max - e_min) if (e_max - e_min) != 0 else 1.0
         e1_norm = (e1_param - e_min) / e_span
         e2_norm = (e2_param - e_min) / e_span
+
+        t_min, t_max = config.THICKNESS_RANGE
+        t_span = (t_max - t_min) if (t_max - t_min) != 0 else 1.0
+        t_norm = (t_param - t_min) / t_span
 
         r_min, r_max = config.RESTITUTION_RANGE
         r_span = (r_max - r_min) if (r_max - r_min) != 0 else 1.0
@@ -114,17 +140,22 @@ class LayerNet(nn.Module):
         v0_span = (v0_max - v0_min) if (v0_max - v0_min) != 0 else 1.0
         v0_norm = (v0_param - v0_min) / v0_span
 
-        t_total = float(getattr(config, 'H', 0.1))
-        t_total_safe = max(t_total, 1e-6)
+        t_total_safe = torch.clamp(t_param, min=1e-6)
         z_hat = z_coord / t_total_safe
-        t1 = float(config.Layer_Interfaces[1])
+        t1 = 0.5 * t_param
         sd_norm = (z_coord - t1) / t_total_safe
+        zeta = 2.0 * z_hat - 1.0
         beta = float(getattr(config, "INTERFACE_FEATURE_BETA", 20.0))
         soft = torch.sigmoid(beta * sd_norm)
-        extra_feats = torch.cat([sd_norm, torch.abs(sd_norm), soft], dim=1)
+        bend_scale = (float(config.H) / t_total_safe) ** 3
+        bend_max = (float(config.H) / max(float(t_min), 1e-6)) ** 3
+        bend_min = (float(config.H) / max(float(t_max), 1e-6)) ** 3
+        bend_span = max(bend_max - bend_min, 1e-6)
+        bend_norm = (bend_scale - bend_min) / bend_span
+        extra_feats = torch.cat([sd_norm, torch.abs(sd_norm), soft, zeta ** 3, bend_norm], dim=1)
         
         x_scaled = torch.cat(
-            [x_coord, y_coord, z_hat, e1_norm, e2_norm, r_norm, mu_norm, v0_norm, extra_feats],
+            [x_coord, y_coord, z_hat, e1_norm, e2_norm, t_norm, r_norm, mu_norm, v0_norm, extra_feats],
             dim=1
         )
         u_raw = self.net(x_scaled)

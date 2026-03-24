@@ -17,12 +17,12 @@ E_vals = [1.0] # Normalized
 nu_vals = [0.3]
 # Parameterized PINN settings (do not alter baseline values)
 E_RANGE = [1.0, 10.0]
-THICKNESS_RANGE = [H, H]
-RESTITUTION_RANGE = [0.1, 0.9]
-FRICTION_RANGE = [0.0, 0.6]
-IMPACT_VELOCITY_RANGE = [0.2, 2.0]
-# Params: [E1, E2, r, mu, v0]
-PARAM_DIM = 5
+THICKNESS_RANGE = [0.05, 0.15]
+RESTITUTION_RANGE = [0.5, 0.5]
+FRICTION_RANGE = [0.3, 0.3]
+IMPACT_VELOCITY_RANGE = [1.0, 1.0]
+# Params: [E1, E2, t, r, mu, v0]
+PARAM_DIM = 6
 
 # Optional: explicit E sweep values for `verify_parametric_pinn.py`.
 # If not set, it uses `np.linspace(E_RANGE[0], E_RANGE[1], PINN_VERIFY_E_STEPS)`.
@@ -37,12 +37,12 @@ RESTITUTION_REF = 0.5
 FRICTION_REF = 0.3
 IMPACT_VELOCITY_REF = 1.0
 
-# Inference-time compliance correction for E:
+# Inference-time compliance correction for E/t:
 # Use u = v / E^p instead of v / E (p=1.0). This can help slightly reduce
 # high-E under/over-shoot without retraining.
-E_COMPLIANCE_POWER = 0.973
+E_COMPLIANCE_POWER = 0.99
 # Global compliance calibration applied at evaluation/inference time.
-DISPLACEMENT_COMPLIANCE_SCALE = 1.26
+DISPLACEMENT_COMPLIANCE_SCALE = 1.38
 
 # --- Parametric compliance scaling ---
 # Many plate-like problems scale strongly with thickness (often ~ 1/t^3).
@@ -50,7 +50,7 @@ DISPLACEMENT_COMPLIANCE_SCALE = 1.26
 #   u = (v / E) * (H / t)^alpha
 # where H is the baseline thickness (config.H) and t is the sampled thickness.
 # Set alpha=0.0 to disable.
-THICKNESS_COMPLIANCE_ALPHA = 1.234
+THICKNESS_COMPLIANCE_ALPHA = 1.85
 
 def get_lame_params(E, nu):
     lm = (E * nu) / ((1 + nu) * (1 - 2 * nu))
@@ -134,12 +134,12 @@ FOURIER_SCALE = 1.0 # Standard deviation for frequency sampling
 # Hybrid / Parametric Training Data
 N_DATA_POINTS = 9000
 DATA_E_VALUES = [1.0, 5.0, 10.0]
-DATA_THICKNESS_VALUES = [H]
+DATA_THICKNESS_VALUES = [0.05, 0.10, 0.15]
 USE_SUPERVISION_DATA = True
 
 # --- Explicit impact/friction physics controls ---
 # When enabled, restitution/friction influence boundary losses directly.
-USE_EXPLICIT_IMPACT_PHYSICS = True
+USE_EXPLICIT_IMPACT_PHYSICS = False
 # If True, keeps restitution/friction neutral (used before explicit physics).
 ENFORCE_IMPACT_INVARIANCE = False
 # Restitution-coupled load amplification gain.

@@ -14,9 +14,12 @@ import matplotlib.pyplot as plt
 
 def _u_from_v(v, pts):
     e_scale = 0.5 * (pts[:, 3:4] + pts[:, 4:5])
+    t_scale = pts[:, 5:6]
     e_pow = float(getattr(config, "E_COMPLIANCE_POWER", 1.0))
+    alpha = float(getattr(config, "THICKNESS_COMPLIANCE_ALPHA", 0.0))
     scale = float(getattr(config, "DISPLACEMENT_COMPLIANCE_SCALE", 1.0))
-    return scale * v / (e_scale ** e_pow)
+    h_ref = float(getattr(config, "H", 1.0))
+    return scale * v / (e_scale ** e_pow) * (h_ref / np.clip(t_scale, 1e-8, None)) ** alpha
 
 def _load_compatible_state_dict(pinn, ckpt_path, device):
     sd = torch.load(ckpt_path, map_location=device, weights_only=True)
@@ -101,16 +104,18 @@ def train():
         U_fea = fem_data['u']
         
         # Prepare FEM evaluation grid using homogeneous E1=E2 plus reference impact params.
+        thickness_ref = float(np.max(Z_fea))
         pts_fea = np.stack([X_fea.ravel(), Y_fea.ravel(), Z_fea.ravel()], axis=1)
         e1_ones = np.ones((pts_fea.shape[0], 1)) * config.E_vals[0]
         e2_ones = np.ones((pts_fea.shape[0], 1)) * config.E_vals[0]
+        t_ones = np.ones((pts_fea.shape[0], 1)) * thickness_ref
         r_ref = float(getattr(config, "RESTITUTION_REF", 0.5))
         mu_ref = float(getattr(config, "FRICTION_REF", 0.3))
         v0_ref = float(getattr(config, "IMPACT_VELOCITY_REF", 1.0))
         r_ones = np.ones((pts_fea.shape[0], 1)) * r_ref
         mu_ones = np.ones((pts_fea.shape[0], 1)) * mu_ref
         v0_ones = np.ones((pts_fea.shape[0], 1)) * v0_ref
-        pts_fea = np.hstack([pts_fea, e1_ones, e2_ones, r_ones, mu_ones, v0_ones])
+        pts_fea = np.hstack([pts_fea, e1_ones, e2_ones, t_ones, r_ones, mu_ones, v0_ones])
         pts_fea_tensor = torch.tensor(pts_fea, dtype=torch.float32).to(device)
         u_fea_flat = U_fea.reshape(-1, 3)
         
