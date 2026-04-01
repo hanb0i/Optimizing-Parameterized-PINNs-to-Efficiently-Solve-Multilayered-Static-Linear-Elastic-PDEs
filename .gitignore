@@ -1,1 +1,5 @@
 uv.lock
+.mplconfig/
+.tmp/
+pinn-workflow/supervision_cache/
+pinn-workflow/checkpoints/

@@ -2,6 +2,8 @@
 import torch
 import numpy as np
 import os
+import json
+import hashlib
 import pinn_config as config
 
 # Parameter range helper (keeps baseline configs intact)
@@ -94,7 +96,10 @@ if FEA_SOLVER_DIR not in sys.path:
 
 def load_fem_supervision_data(n_points_per_e=None, e_values=None, t1_values=None, t2_values=None):
     import fem_solver
-    
+
+    cache_enabled = os.getenv("PINN_SUPERVISION_CACHE", "1").strip().lower() in {"1", "true", "yes", "y", "on"}
+    force_regen = os.getenv("PINN_REGEN_SUPERVISION", "0").strip().lower() in {"1", "true", "yes", "y", "on"}
+
     if e_values is None:
         if hasattr(config, "DATA_E_VALUES"):
             e_values = config.DATA_E_VALUES
@@ -117,6 +122,32 @@ def load_fem_supervision_data(n_points_per_e=None, e_values=None, t1_values=None
             n_points_per_e = config.N_DATA_POINTS // max(1, len(e_values) ** 2 * len(t1_values) * len(t2_values))
         else:
             n_points_per_e = 0
+
+    meta = {
+        "e_values": [float(v) for v in e_values],
+        "t1_values": [float(v) for v in t1_values],
+        "t2_values": [float(v) for v in t2_values],
+        "n_points_per_e": int(n_points_per_e),
+        "ne_x": int(getattr(config, "FEM_NE_X", 30)),
+        "ne_y": int(getattr(config, "FEM_NE_Y", 30)),
+        "ne_z": int(getattr(config, "FEM_NE_Z", 10)),
+        "Lx": float(getattr(config, "Lx", 1.0)),
+        "Ly": float(getattr(config, "Ly", 1.0)),
+        "p0": float(getattr(config, "p0", 1.0)),
+        "load_patch": [list(getattr(config, "LOAD_PATCH_X", [0.0, 1.0])), list(getattr(config, "LOAD_PATCH_Y", [0.0, 1.0]))],
+        "nu": float(getattr(config, "nu_vals", [0.3])[0]),
+        "version": 1,
+    }
+    cache_key = hashlib.sha256(json.dumps(meta, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+    cache_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "supervision_cache")
+    cache_path = os.path.join(cache_dir, f"fem_supervision_{cache_key}.pt")
+
+    if cache_enabled and (not force_regen) and os.path.exists(cache_path):
+        blob = torch.load(cache_path, map_location="cpu")
+        x_data = blob["x"]
+        u_data = blob["u"]
+        print(f"  Loaded cached FEM supervision: {cache_path} ({len(x_data)} points)")
+        return x_data, u_data
     
     x_data_list = []
     u_data_list = []
@@ -188,6 +219,11 @@ def load_fem_supervision_data(n_points_per_e=None, e_values=None, t1_values=None
     
     x_data = torch.cat(x_data_list, dim=0)
     u_data = torch.cat(u_data_list, dim=0)
+
+    if cache_enabled:
+        os.makedirs(cache_dir, exist_ok=True)
+        torch.save({"x": x_data.cpu(), "u": u_data.cpu(), "meta": meta}, cache_path)
+        print(f"  Saved FEM supervision cache: {cache_path}")
     
     print(f"  Loaded {len(x_data)} sparse FEM supervision points")
     return x_data, u_data

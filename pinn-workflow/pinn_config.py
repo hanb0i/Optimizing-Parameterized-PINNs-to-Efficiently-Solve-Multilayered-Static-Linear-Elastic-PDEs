@@ -1,3 +1,4 @@
+import os
 import torch
 import numpy as np
 
@@ -106,6 +107,63 @@ WEIGHTS = {
     'data': 5.0
 }
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    val = os.getenv(name)
+    if val is None:
+        return default
+    return val.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+def _env_int(name: str, default: int) -> int:
+    val = os.getenv(name)
+    if val is None:
+        return default
+    try:
+        return int(val)
+    except ValueError:
+        return default
+
+def _env_float(name: str, default: float) -> float:
+    val = os.getenv(name)
+    if val is None:
+        return default
+    try:
+        return float(val)
+    except ValueError:
+        return default
+
+def _env_float_list(name: str, default):
+    val = os.getenv(name)
+    if val is None:
+        return default
+    out = []
+    for part in val.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            out.append(float(part))
+        except ValueError:
+            return default
+    return out if out else default
+
+# --- Env overrides (tuning without edits) ---
+DISPLACEMENT_COMPLIANCE_SCALE = _env_float("PINN_DISPLACEMENT_COMPLIANCE_SCALE", DISPLACEMENT_COMPLIANCE_SCALE)
+THICKNESS_COMPLIANCE_ALPHA = _env_float("PINN_THICKNESS_COMPLIANCE_ALPHA", THICKNESS_COMPLIANCE_ALPHA)
+E_COMPLIANCE_POWER = _env_float("PINN_E_COMPLIANCE_POWER", E_COMPLIANCE_POWER)
+
+for _k, _env in [
+    ("pde", "PINN_W_PDE"),
+    ("interface_u", "PINN_W_INTERFACE_U"),
+    ("load", "PINN_W_LOAD"),
+    ("bc", "PINN_W_BC"),
+    ("data", "PINN_W_DATA"),
+]:
+    if _env in os.environ:
+        WEIGHTS[_k] = _env_float(_env, float(WEIGHTS.get(_k, 0.0)))
+
+# PDE decomposition toggle (balances stiff/soft layers during training).
+PDE_DECOMPOSE_BY_LAYER = _env_flag("PINN_PDE_DECOMPOSE_BY_LAYER", False)
+
 # Loss weight ramp: load-first to raise displacement while preserving shape.
 WEIGHT_RAMP_EPOCHS = 0
 LOAD_WEIGHT_START = WEIGHTS['load']
@@ -121,9 +179,9 @@ N_SIDES = 2000  # Clamped side faces
 N_TOP_LOAD = 6000  # Load patch (more points to boost displacement)
 N_TOP_FREE = 2000  # Top free surface
 N_BOTTOM = 2000  # Bottom free surface
-N_INTERFACE = 2000  # Exact points on the layer interface
+N_INTERFACE = _env_int("PINN_N_INTERFACE", 2000)  # Exact points on the layer interface
 UNDER_PATCH_FRACTION = 0.95 # More interior points focus under the load patch
-INTERFACE_SAMPLE_FRACTION = 0.4
+INTERFACE_SAMPLE_FRACTION = _env_float("PINN_INTERFACE_SAMPLE_FRACTION", 0.4)
 INTERFACE_BAND = 0.05 * H
 # Bias a portion of patch samples toward the center.
 PATCH_CENTER_BIAS_FRACTION = 0.8
@@ -141,7 +199,7 @@ FOURIER_DIM = 0 # Number of Fourier frequencies
 FOURIER_SCALE = 1.0 # Standard deviation for frequency sampling
 
 # Hybrid / Parametric Training Data
-N_DATA_POINTS = 1200
+N_DATA_POINTS = _env_int("PINN_N_DATA_POINTS", 1200)
 DATA_E_VALUES = [1.0, 10.0]
 DATA_T1_VALUES = [0.05]
 DATA_T2_VALUES = [0.08]
@@ -150,6 +208,19 @@ EVAL_E_VALUES = [1.0, 10.0]
 EVAL_T1_VALUES = [0.05]
 EVAL_T2_VALUES = [0.08]
 USE_SUPERVISION_DATA = True
+
+DATA_E_VALUES = _env_float_list("PINN_DATA_E_VALUES", DATA_E_VALUES)
+DATA_T1_VALUES = _env_float_list("PINN_DATA_T1_VALUES", DATA_T1_VALUES)
+DATA_T2_VALUES = _env_float_list("PINN_DATA_T2_VALUES", DATA_T2_VALUES)
+
+EVAL_E_VALUES = _env_float_list("PINN_EVAL_E_VALUES", EVAL_E_VALUES)
+EVAL_T1_VALUES = _env_float_list("PINN_EVAL_T1_VALUES", EVAL_T1_VALUES)
+EVAL_T2_VALUES = _env_float_list("PINN_EVAL_T2_VALUES", EVAL_T2_VALUES)
+
+# FEM mesh resolution for supervision generation (lower for faster runs).
+FEM_NE_X = _env_int("PINN_FEM_NE_X", FEM_NE_X)
+FEM_NE_Y = _env_int("PINN_FEM_NE_Y", FEM_NE_Y)
+FEM_NE_Z = _env_int("PINN_FEM_NE_Z", FEM_NE_Z)
 
 # --- Explicit impact/friction physics controls ---
 # When enabled, restitution/friction influence boundary losses directly.
