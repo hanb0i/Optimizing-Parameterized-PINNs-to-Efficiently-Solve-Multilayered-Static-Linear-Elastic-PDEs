@@ -192,3 +192,33 @@ def solve_two_layer_fem(cfg):
     ke_per_element = np.where(is_bottom[:, None], ke_flat_bottom[None, :], ke_flat_top[None, :])
 
     return _assemble_and_solve(cfg, ke_per_element)
+
+
+def solve_three_layer_fem(cfg):
+    print("Initializing Three-Layer FEA Solver...")
+    Lx, Ly, H = cfg["geometry"]["Lx"], cfg["geometry"]["Ly"], cfg["geometry"]["H"]
+    ne_x = int(cfg["geometry"].get("ne_x", 30))
+    ne_y = int(cfg["geometry"].get("ne_y", 30))
+    ne_z = int(cfg["geometry"].get("ne_z", 10))
+    dx, dy, dz = Lx / ne_x, Ly / ne_y, H / ne_z
+
+    material = cfg["material"]
+    nu = material["nu"]
+    e_layers = material["E_layers"]
+    t_layers = material.get("t_layers", [H / 3.0, H / 3.0, H / 3.0])
+    if len(e_layers) != 3 or len(t_layers) != 3:
+        raise ValueError("solve_three_layer_fem expects exactly three layers.")
+
+    interfaces = np.cumsum(np.array(t_layers, dtype=float))
+    ke_by_layer = np.stack(
+        [_hex8_stiffness(dx, dy, dz, float(e_layers[i]), nu).ravel() for i in range(3)],
+        axis=0,
+    )
+
+    ek, _, _ = np.unravel_index(np.arange(ne_x * ne_y * ne_z), (ne_z, ne_y, ne_x))
+    z_centers = (ek + 0.5) * dz
+    layer_ids = np.searchsorted(interfaces, z_centers, side="right")
+    layer_ids = np.clip(layer_ids, 0, 2)
+    ke_per_element = ke_by_layer[layer_ids]
+
+    return _assemble_and_solve(cfg, ke_per_element)

@@ -13,6 +13,22 @@ def _adapt_first_layer_weight(src_w, tgt_w):
         adapted[:, :12] = src_w[:, :12]
         return adapted
 
+    # Two-layer layout (15 inputs) -> three-layer layout (21 inputs).
+    # Old (15):
+    # [x,y,z_hat, E1,t1,E2,t2, r,mu,v0, sd1,|sd1|,soft1, zeta^3, bend]
+    # New (21):
+    # [x,y,z_hat, E1,t1,E2,t2,E3,t3, r,mu,v0, sd1,|sd1|,soft1, sd2,|sd2|,soft2, zeta^3, bend, soft1-soft2]
+    if src_w.shape[1] == 15 and tgt_w.shape[1] >= 21:
+        adapted[:, 0:7] = src_w[:, 0:7]
+        adapted[:, 7:8] = src_w[:, 5:6]  # E3 <- E2
+        adapted[:, 8:9] = src_w[:, 6:7]  # t3 <- t2
+        adapted[:, 9:12] = src_w[:, 7:10]  # r,mu,v0
+        adapted[:, 12:15] = src_w[:, 10:13]  # sd1,|sd1|,soft1
+        adapted[:, 15:18] = src_w[:, 10:13]  # sd2,|sd2|,soft2 (copy)
+        adapted[:, 18:20] = src_w[:, 13:15]  # zeta^3,bend
+        # soft1-soft2 left at 0
+        return adapted
+
     # Legacy semantic layout:
     # [x, y, z_hat, E, t, r, mu, v0, extra1, extra2, extra3]
     # Current semantic layout before thickness parameterization:
@@ -105,9 +121,9 @@ class LayerNet(nn.Module):
     def __init__(self, hidden_layers=2, hidden_units=32, activation=nn.Tanh()):
         super().__init__()
         layers = []
-        # Input: x, y, z_hat + 7 normalized params (E1, t1, E2, t2, r, mu, v0)
-        # + 5 derived thickness/interface features.
-        current_dim = 10 + 5
+        # Input: x, y, z_hat + 9 normalized params (E1, t1, E2, t2, E3, t3, r, mu, v0)
+        # + derived thickness/interface features.
+        current_dim = 12 + 9
         
         layers.append(nn.Linear(current_dim, hidden_units))
         layers.append(activation)
@@ -134,14 +150,17 @@ class LayerNet(nn.Module):
         t1_param = x[:, 4:5]
         e2_param = x[:, 5:6]
         t2_param = x[:, 6:7]
-        r_param = x[:, 7:8]
-        mu_param = x[:, 8:9]
-        v0_param = x[:, 9:10]
+        e3_param = x[:, 7:8]
+        t3_param = x[:, 8:9]
+        r_param = x[:, 9:10]
+        mu_param = x[:, 10:11]
+        v0_param = x[:, 11:12]
         
         e_min, e_max = config.E_RANGE
         e_span = (e_max - e_min) if (e_max - e_min) != 0 else 1.0
         e1_norm = (e1_param - e_min) / e_span
         e2_norm = (e2_param - e_min) / e_span
+        e3_norm = (e3_param - e_min) / e_span
 
         t1_min, t1_max = config.T1_RANGE
         t1_span = (t1_max - t1_min) if (t1_max - t1_min) != 0 else 1.0
@@ -150,6 +169,10 @@ class LayerNet(nn.Module):
         t2_min, t2_max = config.T2_RANGE
         t2_span = (t2_max - t2_min) if (t2_max - t2_min) != 0 else 1.0
         t2_norm = (t2_param - t2_min) / t2_span
+
+        t3_min, t3_max = config.T3_RANGE
+        t3_span = (t3_max - t3_min) if (t3_max - t3_min) != 0 else 1.0
+        t3_norm = (t3_param - t3_min) / t3_span
 
         r_min, r_max = config.RESTITUTION_RANGE
         r_span = (r_max - r_min) if (r_max - r_min) != 0 else 1.0
@@ -163,21 +186,50 @@ class LayerNet(nn.Module):
         v0_span = (v0_max - v0_min) if (v0_max - v0_min) != 0 else 1.0
         v0_norm = (v0_param - v0_min) / v0_span
 
-        t_total_safe = torch.clamp(t1_param + t2_param, min=1e-6)
+        t_total_safe = torch.clamp(t1_param + t2_param + t3_param, min=1e-6)
         z_hat = z_coord / t_total_safe
-        sd_norm = (z_coord - t1_param) / t_total_safe
+        sd1_norm = (z_coord - t1_param) / t_total_safe
+        sd2_norm = (z_coord - (t1_param + t2_param)) / t_total_safe
         zeta = 2.0 * z_hat - 1.0
         beta = float(getattr(config, "INTERFACE_FEATURE_BETA", 20.0))
-        soft = torch.sigmoid(beta * sd_norm)
+        soft1 = torch.sigmoid(beta * sd1_norm)
+        soft2 = torch.sigmoid(beta * sd2_norm)
         bend_scale = (float(config.H) / t_total_safe) ** 3
-        bend_max = (float(config.H) / max(float(t1_min + t2_min), 1e-6)) ** 3
-        bend_min = (float(config.H) / max(float(t1_max + t2_max), 1e-6)) ** 3
+        bend_max = (float(config.H) / max(float(t1_min + t2_min + t3_min), 1e-6)) ** 3
+        bend_min = (float(config.H) / max(float(t1_max + t2_max + t3_max), 1e-6)) ** 3
         bend_span = max(bend_max - bend_min, 1e-6)
         bend_norm = (bend_scale - bend_min) / bend_span
-        extra_feats = torch.cat([sd_norm, torch.abs(sd_norm), soft, zeta ** 3, bend_norm], dim=1)
+        extra_feats = torch.cat(
+            [
+                sd1_norm,
+                torch.abs(sd1_norm),
+                soft1,
+                sd2_norm,
+                torch.abs(sd2_norm),
+                soft2,
+                zeta ** 3,
+                bend_norm,
+                (soft1 - soft2),
+            ],
+            dim=1,
+        )
         
         x_scaled = torch.cat(
-            [x_coord, y_coord, z_hat, e1_norm, t1_norm, e2_norm, t2_norm, r_norm, mu_norm, v0_norm, extra_feats],
+            [
+                x_coord,
+                y_coord,
+                z_hat,
+                e1_norm,
+                t1_norm,
+                e2_norm,
+                t2_norm,
+                e3_norm,
+                t3_norm,
+                r_norm,
+                mu_norm,
+                v0_norm,
+                extra_feats,
+            ],
             dim=1
         )
         u_raw = self.net(x_scaled)

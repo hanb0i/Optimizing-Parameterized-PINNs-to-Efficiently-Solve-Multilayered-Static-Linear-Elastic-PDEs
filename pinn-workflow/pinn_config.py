@@ -6,10 +6,10 @@ import numpy as np
 Lx = 1.0
 Ly = 1.0
 H = 0.1  # Total height (baseline thickness)
-# Two layers (homogeneous per layer); z goes from 0 to H.
-NUM_LAYERS = 2
-LAYER_THICKNESSES = [H / 2.0, H / 2.0]
-Layer_Interfaces = [0.0, LAYER_THICKNESSES[0], H]
+# Three layers (homogeneous per layer); z goes from 0 to H.
+NUM_LAYERS = 3
+LAYER_THICKNESSES = [H / 3.0, H / 3.0, H / 3.0]
+Layer_Interfaces = [0.0, LAYER_THICKNESSES[0], LAYER_THICKNESSES[0] + LAYER_THICKNESSES[1], H]
 
 # --- Material Properties ---
 # Young's Modulus (E) and Poisson's Ratio (nu)
@@ -20,11 +20,12 @@ nu_vals = [0.3]
 E_RANGE = [1.0, 10.0]
 T1_RANGE = [0.02, 0.10]
 T2_RANGE = [0.02, 0.10]
+T3_RANGE = [0.02, 0.10]
 RESTITUTION_RANGE = [0.5, 0.5]
 FRICTION_RANGE = [0.3, 0.3]
 IMPACT_VELOCITY_RANGE = [1.0, 1.0]
-# Params: [E1, t1, E2, t2, r, mu, v0]
-PARAM_DIM = 7
+# Params: [E1, t1, E2, t2, E3, t3, r, mu, v0]
+PARAM_DIM = 9
 
 # Optional: explicit E sweep values for `verify_parametric_pinn.py`.
 # If not set, it uses `np.linspace(E_RANGE[0], E_RANGE[1], PINN_VERIFY_E_STEPS)`.
@@ -42,7 +43,7 @@ IMPACT_VELOCITY_REF = 1.0
 # Inference-time compliance correction for E/t:
 # Use u = v / E^p instead of v / E (p=1.0). This can help slightly reduce
 # high-E under/over-shoot without retraining.
-E_COMPLIANCE_POWER = 0.99
+E_COMPLIANCE_POWER = 0.95
 # Global compliance calibration applied at evaluation/inference time.
 DISPLACEMENT_COMPLIANCE_SCALE = 1.0
 
@@ -95,7 +96,7 @@ EPOCHS_LBFGS = 0
 SOAP_PRECONDITION_FREQUENCY = 10 # Lower = more frequent curvature updates; higher = cheaper but less responsive
 #Plot Physical Residuals Every N Epochs every 100 epochs. 
 WEIGHTS = {
-    'pde': 4.0,
+    'pde': 6.0,
     'bc': 0.7,      # Slightly softer sides so load can gather more budget
     'load': 5.0, # Optimal load weight
     'energy': 0.63, # Per user request
@@ -103,7 +104,7 @@ WEIGHTS = {
     'impact_contact': 0.0002,   # Reduced to preserve FEA parity in no-supervision mode
     'friction_coulomb': 0.001,  # Reduced to preserve FEA parity in no-supervision mode
     'friction_stick': 0.0005,   # Reduced to preserve FEA parity in no-supervision mode
-    'interface_u': 20.0,
+    'interface_u': 150.0,
     'data': 5.0
 }
 
@@ -179,9 +180,9 @@ N_SIDES = 2000  # Clamped side faces
 N_TOP_LOAD = 6000  # Load patch (more points to boost displacement)
 N_TOP_FREE = 2000  # Top free surface
 N_BOTTOM = 2000  # Bottom free surface
-N_INTERFACE = _env_int("PINN_N_INTERFACE", 4000)  # Exact points on the layer interface
+N_INTERFACE = _env_int("PINN_N_INTERFACE", 8000)  # Exact points on the layer interface
 UNDER_PATCH_FRACTION = 0.95 # More interior points focus under the load patch
-INTERFACE_SAMPLE_FRACTION = _env_float("PINN_INTERFACE_SAMPLE_FRACTION", 0.25)
+INTERFACE_SAMPLE_FRACTION = _env_float("PINN_INTERFACE_SAMPLE_FRACTION", 0.50)
 INTERFACE_BAND = 0.05 * H
 # Bias a portion of patch samples toward the center.
 PATCH_CENTER_BIAS_FRACTION = 0.8
@@ -199,23 +200,27 @@ FOURIER_DIM = 0 # Number of Fourier frequencies
 FOURIER_SCALE = 1.0 # Standard deviation for frequency sampling
 
 # Hybrid / Parametric Training Data
-N_DATA_POINTS = _env_int("PINN_N_DATA_POINTS", 4000)
+N_DATA_POINTS = _env_int("PINN_N_DATA_POINTS", 24000)
 DATA_E_VALUES = [1.0, 10.0]
 DATA_T1_VALUES = [0.02, 0.10]
 DATA_T2_VALUES = [0.02, 0.10]
+DATA_T3_VALUES = [0.02, 0.10]
 # Smaller evaluation grid for quick sweeps.
 EVAL_E_VALUES = [1.0, 10.0]
 EVAL_T1_VALUES = [0.02, 0.10]
 EVAL_T2_VALUES = [0.02, 0.10]
+EVAL_T3_VALUES = [0.02, 0.10]
 USE_SUPERVISION_DATA = True
 
 DATA_E_VALUES = _env_float_list("PINN_DATA_E_VALUES", DATA_E_VALUES)
 DATA_T1_VALUES = _env_float_list("PINN_DATA_T1_VALUES", DATA_T1_VALUES)
 DATA_T2_VALUES = _env_float_list("PINN_DATA_T2_VALUES", DATA_T2_VALUES)
+DATA_T3_VALUES = _env_float_list("PINN_DATA_T3_VALUES", DATA_T3_VALUES)
 
 EVAL_E_VALUES = _env_float_list("PINN_EVAL_E_VALUES", EVAL_E_VALUES)
 EVAL_T1_VALUES = _env_float_list("PINN_EVAL_T1_VALUES", EVAL_T1_VALUES)
 EVAL_T2_VALUES = _env_float_list("PINN_EVAL_T2_VALUES", EVAL_T2_VALUES)
+EVAL_T3_VALUES = _env_float_list("PINN_EVAL_T3_VALUES", EVAL_T3_VALUES)
 
 # FEM mesh resolution for supervision generation (lower for faster runs).
 FEM_NE_X = _env_int("PINN_FEM_NE_X", FEM_NE_X)

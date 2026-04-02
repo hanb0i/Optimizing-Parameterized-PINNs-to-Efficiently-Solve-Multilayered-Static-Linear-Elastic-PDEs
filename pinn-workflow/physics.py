@@ -20,17 +20,21 @@ def v_to_u(v, E, t=None):
     return v * compliance_scale(E, t)
 
 def _global_E_scale(x):
-    return 0.5 * (x[:, 3:4] + x[:, 5:6])
+    return (x[:, 3:4] + x[:, 5:6] + x[:, 7:8]) / 3.0
 
 def _global_thickness(x):
-    return x[:, 4:5] + x[:, 6:7]
+    return x[:, 4:5] + x[:, 6:7] + x[:, 8:9]
 
 def _select_E_local(x):
     z_coord = x[:, 2:3]
     e1 = x[:, 3:4]
     e2 = x[:, 5:6]
-    z_interface = x[:, 4:5]
-    return torch.where(z_coord <= z_interface, e1, e2)
+    e3 = x[:, 7:8]
+    z_if1 = x[:, 4:5]
+    z_if2 = x[:, 4:5] + x[:, 6:7]
+    in_layer1 = z_coord <= z_if1
+    in_layer2 = (z_coord > z_if1) & (z_coord <= z_if2)
+    return torch.where(in_layer1, e1, torch.where(in_layer2, e2, e3))
 
 def _lame_from_E(E):
     nu = config.nu_vals[0]
@@ -139,11 +143,11 @@ def compute_loss(model, data, device, weights=None):
         mu_min, mu_max = getattr(config, "FRICTION_RANGE", (0.3, 0.3))
         v0_min, v0_max = getattr(config, "IMPACT_VELOCITY_RANGE", (1.0, 1.0))
         if r_max > r_min:
-            x_int_variant[:, 7:8] = torch.rand_like(x_int_variant[:, 7:8]) * (r_max - r_min) + r_min
+            x_int_variant[:, 9:10] = torch.rand_like(x_int_variant[:, 9:10]) * (r_max - r_min) + r_min
         if mu_max > mu_min:
-            x_int_variant[:, 8:9] = torch.rand_like(x_int_variant[:, 8:9]) * (mu_max - mu_min) + mu_min
+            x_int_variant[:, 10:11] = torch.rand_like(x_int_variant[:, 10:11]) * (mu_max - mu_min) + mu_min
         if v0_max > v0_min:
-            x_int_variant[:, 9:10] = torch.rand_like(x_int_variant[:, 9:10]) * (v0_max - v0_min) + v0_min
+            x_int_variant[:, 11:12] = torch.rand_like(x_int_variant[:, 11:12]) * (v0_max - v0_min) + v0_min
         v_int_variant = model(x_int_variant, 0)
         impact_invariance_loss = torch.mean((v_int - v_int_variant) ** 2)
     else:
@@ -167,15 +171,20 @@ def compute_loss(model, data, device, weights=None):
     if getattr(config, "PDE_DECOMPOSE_BY_LAYER", False):
         z_vals = x_int[:, 2:3]
         t1_vals = x_int[:, 4:5]
-        mask_layer1 = (z_vals <= t1_vals).squeeze(1)
-        mask_layer2 = ~mask_layer1
-        if mask_layer1.any() and mask_layer2.any():
-            pde_loss = residual_sq[mask_layer1].mean() + residual_sq[mask_layer2].mean()
-        elif mask_layer1.any():
-            pde_loss = residual_sq[mask_layer1].mean()
-        elif mask_layer2.any():
-            pde_loss = residual_sq[mask_layer2].mean()
-        else:
+        t2_vals = x_int[:, 6:7]
+        if1 = t1_vals
+        if2 = t1_vals + t2_vals
+        mask_layer1 = (z_vals <= if1).squeeze(1)
+        mask_layer2 = ((z_vals > if1) & (z_vals <= if2)).squeeze(1)
+        mask_layer3 = (z_vals > if2).squeeze(1)
+        pde_loss = torch.zeros((), device=device)
+        if mask_layer1.any():
+            pde_loss = pde_loss + residual_sq[mask_layer1].mean()
+        if mask_layer2.any():
+            pde_loss = pde_loss + residual_sq[mask_layer2].mean()
+        if mask_layer3.any():
+            pde_loss = pde_loss + residual_sq[mask_layer3].mean()
+        if not (mask_layer1.any() or mask_layer2.any() or mask_layer3.any()):
             pde_loss = residual_sq.mean()
     else:
         pde_loss = residual_sq.mean()
@@ -205,9 +214,18 @@ def compute_loss(model, data, device, weights=None):
         eps_if = strain(grad_u_if)
         sig_if_1 = stress(eps_if, *_lame_from_E(x_if[:, 3:4]))
         sig_if_2 = stress(eps_if, *_lame_from_E(x_if[:, 5:6]))
+        sig_if_3 = stress(eps_if, *_lame_from_E(x_if[:, 7:8]))
         traction_1 = sig_if_1[:, :, 2]
         traction_2 = sig_if_2[:, :, 2]
-        interface_loss = torch.mean((traction_1 - traction_2) ** 2)
+        traction_3 = sig_if_3[:, :, 2]
+
+        z_if = x_if[:, 2:3]
+        z_if1 = x_if[:, 4:5]
+        z_if2 = x_if[:, 4:5] + x_if[:, 6:7]
+        is_if1 = (torch.abs(z_if - z_if1) <= torch.abs(z_if - z_if2)).squeeze(1)
+        left = torch.where(is_if1.unsqueeze(1), traction_1, traction_2)
+        right = torch.where(is_if1.unsqueeze(1), traction_2, traction_3)
+        interface_loss = torch.mean((left - right) ** 2)
     losses['interface_u'] = interface_loss
     total_loss += weights.get('interface_u', 0.0) * interface_loss
     
@@ -235,8 +253,8 @@ def compute_loss(model, data, device, weights=None):
     if getattr(config, "USE_EXPLICIT_IMPACT_PHYSICS", False):
         # Restitution-aware normal traction:
         # lower restitution -> stronger dissipative/impact contact response.
-        restitution_local = torch.clamp(x_top_load[:, 7:8], 0.0, 1.0)
-        impact_velocity_local = torch.clamp(x_top_load[:, 9:10], min=0.0)
+        restitution_local = torch.clamp(x_top_load[:, 9:10], 0.0, 1.0)
+        impact_velocity_local = torch.clamp(x_top_load[:, 11:12], min=0.0)
         thickness_local = torch.clamp(t_load, min=1e-8)
         compression = torch.relu(-u_top[:, 2:3]) / thickness_local
         gain = float(getattr(config, "IMPACT_RESTITUTION_GAIN", 0.75))
@@ -251,7 +269,7 @@ def compute_loss(model, data, device, weights=None):
         total_loss += weights.get('impact_contact', 0.0) * impact_contact_loss
 
         # Coulomb limit: ||T_t|| <= mu * |T_n| on loaded patch.
-        mu_local = torch.clamp(x_top_load[:, 8:9], min=0.0)
+        mu_local = torch.clamp(x_top_load[:, 10:11], min=0.0)
         tangential_mag = torch.norm(T[:, :2], dim=1, keepdim=True)
         normal_mag = torch.abs(T[:, 2:3])
         friction_limit = mu_local * normal_mag
