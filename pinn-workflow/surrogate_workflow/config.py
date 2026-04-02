@@ -23,7 +23,7 @@ DESIGN_RANGES = {
 }
 
 # Dataset generation
-N_SAMPLES = 500
+N_SAMPLES = 800
 SEED = 7
 TRAIN_FRACTION = 0.8
 VAL_FRACTION = 0.1
@@ -32,12 +32,14 @@ VAL_FRACTION = 0.1
 HIDDEN_LAYERS = 4
 HIDDEN_UNITS = 128
 ACTIVATION = "tanh"
+FOURIER_DIM = 0
+FOURIER_SCALE = 1.0
 
 # Training
 LEARNING_RATE = 1e-3
-MAX_EPOCHS = 3000
+MAX_EPOCHS = 5000
 BATCH_SIZE = 64
-PATIENCE = 200
+PATIENCE = 300
 MIN_DELTA = 1e-6
 
 # Validation and sweeps
@@ -46,6 +48,16 @@ TREND_SWEEP_POINTS = 50
 OPT_CANDIDATES = 1000
 TREND_ANCHOR_POINTS = 25
 
+# Add a small set of (low/high) corners to reduce worst-case errors near extremes.
+CORNER_ANCHORS = True
+
+# Output transform.
+Y_TRANSFORM = "log"  # "identity" | "log"
+Y_EPS = 1e-6
+
+# Loss mode: relative MSE directly targets relative error.
+LOSS_MODE = "mse"  # "mse" | "relative_mse"
+RELATIVE_LOSS_EPS = 1e-3
+
 def mid_design() -> np.ndarray:
     return np.array([(DESIGN_RANGES[name][0] + DESIGN_RANGES[name][1]) * 0.5 for name in DESIGN_PARAMS], dtype=float)
-

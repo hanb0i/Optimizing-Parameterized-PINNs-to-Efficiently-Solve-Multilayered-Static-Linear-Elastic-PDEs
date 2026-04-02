@@ -65,14 +65,25 @@ def train_model(model, train_loader, val_loader, config, device):
     patience_left = int(config.PATIENCE)
     history = {"train": [], "val": []}
     has_val = hasattr(val_loader, "dataset") and len(val_loader.dataset) > 0
+    loss_mode = str(getattr(config, "LOSS_MODE", "mse")).strip().lower()
 
     for epoch in range(int(config.MAX_EPOCHS)):
         model.train()
         train_loss = 0.0
-        for xb, yb in train_loader:
+        for batch in train_loader:
+            if len(batch) == 3:
+                xb, yb, wb = batch
+                wb = wb.to(device)
+            else:
+                xb, yb = batch
+                wb = None
             xb, yb = xb.to(device), yb.to(device)
             optimizer.zero_grad()
-            loss = criterion(model(xb), yb)
+            pred = model(xb)
+            if loss_mode == "relative_mse" and wb is not None:
+                loss = torch.mean(wb * (pred - yb) ** 2)
+            else:
+                loss = criterion(pred, yb)
             loss.backward()
             optimizer.step()
             train_loss += loss.item() * xb.size(0)
@@ -82,9 +93,19 @@ def train_model(model, train_loader, val_loader, config, device):
             model.eval()
             val_loss = 0.0
             with torch.no_grad():
-                for xb, yb in val_loader:
+                for batch in val_loader:
+                    if len(batch) == 3:
+                        xb, yb, wb = batch
+                        wb = wb.to(device)
+                    else:
+                        xb, yb = batch
+                        wb = None
                     xb, yb = xb.to(device), yb.to(device)
-                    loss = criterion(model(xb), yb)
+                    pred = model(xb)
+                    if loss_mode == "relative_mse" and wb is not None:
+                        loss = torch.mean(wb * (pred - yb) ** 2)
+                    else:
+                        loss = criterion(pred, yb)
                     val_loss += loss.item() * xb.size(0)
             val_loss /= len(val_loader.dataset)
         else:

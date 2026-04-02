@@ -35,15 +35,22 @@ def load_or_generate_dataset(regenerate: bool):
 def build_loaders(dataset, seed: int):
     n_samples = dataset["x_norm"].shape[0]
     train_idx, val_idx, test_idx = data_utils.split_indices(
-        n_samples, float(config.TRAIN_FRACTION), float(config.VAL_FRACTION), seed
+        n_samples,
+        float(config.TRAIN_FRACTION),
+        float(config.VAL_FRACTION),
+        seed,
+        n_anchors=int(dataset.get("n_anchors", 0)),
     )
 
     x = dataset["x_norm"].astype(np.float32)
     y = dataset["y_norm"].astype(np.float32).reshape(-1, 1)
+    y_raw = dataset["y_raw"].astype(np.float32).reshape(-1, 1)
+    rel_eps = float(getattr(config, "RELATIVE_LOSS_EPS", 1e-3))
+    weights = (1.0 / (y_raw ** 2 + rel_eps ** 2)).astype(np.float32)
 
-    train_ds = TensorDataset(torch.from_numpy(x[train_idx]), torch.from_numpy(y[train_idx]))
-    val_ds = TensorDataset(torch.from_numpy(x[val_idx]), torch.from_numpy(y[val_idx]))
-    test_ds = TensorDataset(torch.from_numpy(x[test_idx]), torch.from_numpy(y[test_idx]))
+    train_ds = TensorDataset(torch.from_numpy(x[train_idx]), torch.from_numpy(y[train_idx]), torch.from_numpy(weights[train_idx]))
+    val_ds = TensorDataset(torch.from_numpy(x[val_idx]), torch.from_numpy(y[val_idx]), torch.from_numpy(weights[val_idx]))
+    test_ds = TensorDataset(torch.from_numpy(x[test_idx]), torch.from_numpy(y[test_idx]), torch.from_numpy(weights[test_idx]))
 
     train_loader = DataLoader(train_ds, batch_size=int(config.BATCH_SIZE), shuffle=True)
     val_loader = DataLoader(val_ds, batch_size=int(config.BATCH_SIZE), shuffle=False)
@@ -55,7 +62,13 @@ def evaluate_splits(model, dataset, splits, device):
     x_norm = dataset["x_norm"]
     y_raw = dataset["y_raw"]
     y_norm = surrogate.predict(model, x_norm, device)
-    y_pred = validate.denormalize_y(y_norm, dataset["y_min"], dataset["y_max"])
+    y_pred = validate.denormalize_y(
+        y_norm,
+        dataset["y_min"],
+        dataset["y_max"],
+        dataset.get("y_transform", "identity"),
+        dataset.get("y_eps", 1e-12),
+    )
 
     train_idx, val_idx, test_idx = splits
     return {
@@ -73,11 +86,15 @@ def save_model(model, dataset):
         "x_max": dataset["x_max"],
         "y_min": dataset["y_min"],
         "y_max": dataset["y_max"],
+        "y_transform": dataset.get("y_transform", "identity"),
+        "y_eps": float(dataset.get("y_eps", 1e-12)),
         "param_names": dataset["param_names"],
         "config": {
             "hidden_layers": config.HIDDEN_LAYERS,
             "hidden_units": config.HIDDEN_UNITS,
             "activation": config.ACTIVATION,
+            "fourier_dim": int(getattr(config, "FOURIER_DIM", 0)),
+            "fourier_scale": float(getattr(config, "FOURIER_SCALE", 1.0)),
         },
     }
     torch.save(payload, config.MODEL_PATH)
@@ -116,6 +133,8 @@ def main():
         hidden_layers=int(config.HIDDEN_LAYERS),
         hidden_units=int(config.HIDDEN_UNITS),
         activation=str(config.ACTIVATION),
+        fourier_dim=int(getattr(config, "FOURIER_DIM", 0)),
+        fourier_scale=float(getattr(config, "FOURIER_SCALE", 1.0)),
     ).to(device)
 
     model, _history = surrogate.train_model(model, train_loader, val_loader, config, device)
@@ -140,4 +159,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

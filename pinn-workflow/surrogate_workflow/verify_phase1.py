@@ -30,6 +30,8 @@ def _load_trained_model(device: torch.device):
         hidden_layers=int(payload["config"]["hidden_layers"]),
         hidden_units=int(payload["config"]["hidden_units"]),
         activation=str(payload["config"]["activation"]),
+        fourier_dim=int(payload["config"].get("fourier_dim", 0)),
+        fourier_scale=float(payload["config"].get("fourier_scale", 1.0)),
     ).to(device)
     model.load_state_dict(payload["state_dict"])
     model.eval()
@@ -117,11 +119,21 @@ def main():
 
     n_samples = dataset["x_norm"].shape[0]
     train_idx, val_idx, test_idx = data_utils.split_indices(
-        n_samples, float(config.TRAIN_FRACTION), float(config.VAL_FRACTION), int(config.SEED)
+        n_samples,
+        float(config.TRAIN_FRACTION),
+        float(config.VAL_FRACTION),
+        int(config.SEED),
+        n_anchors=int(dataset.get("n_anchors", 0)),
     )
 
     y_norm = surrogate.predict(model, dataset["x_norm"], device)
-    y_pred = validate.denormalize_y(y_norm, dataset["y_min"], dataset["y_max"])
+    y_pred = validate.denormalize_y(
+        y_norm,
+        dataset["y_min"],
+        dataset["y_max"],
+        dataset.get("y_transform", _payload.get("y_transform", "identity")),
+        dataset.get("y_eps", _payload.get("y_eps", 1e-12)),
+    )
     y_true = dataset["y_raw"]
 
     rel_err = _relative_error(y_true[test_idx], y_pred[test_idx])

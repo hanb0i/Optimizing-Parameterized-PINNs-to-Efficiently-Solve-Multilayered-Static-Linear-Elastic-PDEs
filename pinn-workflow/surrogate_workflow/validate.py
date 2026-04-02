@@ -11,8 +11,14 @@ from surrogate_workflow import data as data_utils
 from surrogate_workflow import surrogate
 
 
-def denormalize_y(y_norm, y_min, y_max):
-    return y_norm * (y_max - y_min) + y_min
+def denormalize_y(y_norm, y_min, y_max, y_transform="identity", y_eps=1e-12):
+    mode = str(y_transform).strip().lower()
+    if mode == "log":
+        y_norm = np.clip(y_norm, 0.0, 1.0)
+    y_trans = y_norm * (y_max - y_min) + y_min
+    if mode == "log":
+        return np.exp(y_trans) - float(y_eps)
+    return y_trans
 
 
 def mse(y_true, y_pred):
@@ -54,7 +60,13 @@ def plot_trend(param_name, model, dataset, device, path):
     )
     x_norm, _, _ = data_utils.normalize_inputs(x_raw, ranges)
     y_norm = surrogate.predict(model, x_norm, device)
-    surrogate_vals = denormalize_y(y_norm, dataset["y_min"], dataset["y_max"])
+    surrogate_vals = denormalize_y(
+        y_norm,
+        dataset["y_min"],
+        dataset["y_max"],
+        dataset.get("y_transform", "identity"),
+        dataset.get("y_eps", 1e-12),
+    )
 
     plt.figure(figsize=(7, 4))
     plt.plot(sweep, baseline_vals, "o-", label="Baseline")
@@ -74,7 +86,13 @@ def optimization_safety_check(model, dataset, device):
     candidates = data_utils.sample_designs(int(config.OPT_CANDIDATES), ranges, int(config.SEED) + 13)
     x_norm, _, _ = data_utils.normalize_inputs(candidates, ranges)
     y_norm = surrogate.predict(model, x_norm, device)
-    y_pred = denormalize_y(y_norm, dataset["y_min"], dataset["y_max"])
+    y_pred = denormalize_y(
+        y_norm,
+        dataset["y_min"],
+        dataset["y_max"],
+        dataset.get("y_transform", "identity"),
+        dataset.get("y_eps", 1e-12),
+    )
 
     best_idx = int(np.argmin(y_pred))
     mu_star = candidates[best_idx]
