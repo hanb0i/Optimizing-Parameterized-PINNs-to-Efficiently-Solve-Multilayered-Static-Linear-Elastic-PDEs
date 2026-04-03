@@ -1,3 +1,4 @@
+import os
 import torch
 import numpy as np
 
@@ -43,7 +44,7 @@ IMPACT_VELOCITY_REF = 1.0
 # high-E under/over-shoot without retraining.
 E_COMPLIANCE_POWER = 0.99
 # Global compliance calibration applied at evaluation/inference time.
-DISPLACEMENT_COMPLIANCE_SCALE = 1.38
+DISPLACEMENT_COMPLIANCE_SCALE = 1.0
 
 # --- Parametric compliance scaling ---
 # Many plate-like problems scale strongly with thickness (often ~ 1/t^3).
@@ -51,7 +52,7 @@ DISPLACEMENT_COMPLIANCE_SCALE = 1.38
 #   u = (v / E) * (H / t)^alpha
 # where H is the baseline thickness (config.H) and t is the sampled thickness.
 # Set alpha=0.0 to disable.
-THICKNESS_COMPLIANCE_ALPHA = 1.85
+THICKNESS_COMPLIANCE_ALPHA = 3.0
 
 def get_lame_params(E, nu):
     lm = (E * nu) / ((1 + nu) * (1 - 2 * nu))
@@ -62,6 +63,11 @@ Lame_Params = [get_lame_params(e, n) for e, n in zip(E_vals, nu_vals)]
 
 # --- Loading ---
 p0 = 1.0 # Load magnitude
+
+# --- FEA supervision mesh (lower = faster) ---
+FEM_NE_X = 10
+FEM_NE_Y = 10
+FEM_NE_Z = 4
 
 # --- Unit-consistent loss scaling ---
 # div(sigma) has units of stress/length; scale by a characteristic length.
@@ -83,13 +89,13 @@ INTERFACE_FEATURE_BETA = 20.0
 
 # --- Training Hyperparameters ---
 LEARNING_RATE = 1e-3
-EPOCHS_ADAM = 2000
+EPOCHS_ADAM = 400
 EPOCHS_LBFGS = 0
 # SOAP optimizer
 SOAP_PRECONDITION_FREQUENCY = 10 # Lower = more frequent curvature updates; higher = cheaper but less responsive
 #Plot Physical Residuals Every N Epochs every 100 epochs. 
 WEIGHTS = {
-    'pde': 5.0,    # Reverted to 5.0 (Optimal: 0.4% Error at E=1, 10% at E=10)
+    'pde': 4.0,
     'bc': 0.7,      # Slightly softer sides so load can gather more budget
     'load': 5.0, # Optimal load weight
     'energy': 0.63, # Per user request
@@ -97,9 +103,66 @@ WEIGHTS = {
     'impact_contact': 0.0002,   # Reduced to preserve FEA parity in no-supervision mode
     'friction_coulomb': 0.001,  # Reduced to preserve FEA parity in no-supervision mode
     'friction_stick': 0.0005,   # Reduced to preserve FEA parity in no-supervision mode
-    'interface_u': 1.0,
+    'interface_u': 20.0,
     'data': 5.0
 }
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    val = os.getenv(name)
+    if val is None:
+        return default
+    return val.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+def _env_int(name: str, default: int) -> int:
+    val = os.getenv(name)
+    if val is None:
+        return default
+    try:
+        return int(val)
+    except ValueError:
+        return default
+
+def _env_float(name: str, default: float) -> float:
+    val = os.getenv(name)
+    if val is None:
+        return default
+    try:
+        return float(val)
+    except ValueError:
+        return default
+
+def _env_float_list(name: str, default):
+    val = os.getenv(name)
+    if val is None:
+        return default
+    out = []
+    for part in val.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            out.append(float(part))
+        except ValueError:
+            return default
+    return out if out else default
+
+# --- Env overrides (tuning without edits) ---
+DISPLACEMENT_COMPLIANCE_SCALE = _env_float("PINN_DISPLACEMENT_COMPLIANCE_SCALE", DISPLACEMENT_COMPLIANCE_SCALE)
+THICKNESS_COMPLIANCE_ALPHA = _env_float("PINN_THICKNESS_COMPLIANCE_ALPHA", THICKNESS_COMPLIANCE_ALPHA)
+E_COMPLIANCE_POWER = _env_float("PINN_E_COMPLIANCE_POWER", E_COMPLIANCE_POWER)
+
+for _k, _env in [
+    ("pde", "PINN_W_PDE"),
+    ("interface_u", "PINN_W_INTERFACE_U"),
+    ("load", "PINN_W_LOAD"),
+    ("bc", "PINN_W_BC"),
+    ("data", "PINN_W_DATA"),
+]:
+    if _env in os.environ:
+        WEIGHTS[_k] = _env_float(_env, float(WEIGHTS.get(_k, 0.0)))
+
+# PDE decomposition toggle (balances stiff/soft layers during training).
+PDE_DECOMPOSE_BY_LAYER = _env_flag("PINN_PDE_DECOMPOSE_BY_LAYER", True)
 
 # Loss weight ramp: load-first to raise displacement while preserving shape.
 WEIGHT_RAMP_EPOCHS = 0
@@ -116,10 +179,13 @@ N_SIDES = 2000  # Clamped side faces
 N_TOP_LOAD = 6000  # Load patch (more points to boost displacement)
 N_TOP_FREE = 2000  # Top free surface
 N_BOTTOM = 2000  # Bottom free surface
-N_INTERFACE = 2000  # Exact points on the layer interface
+N_INTERFACE = _env_int("PINN_N_INTERFACE", 4000)  # Exact points on the layer interface
 UNDER_PATCH_FRACTION = 0.95 # More interior points focus under the load patch
-INTERFACE_SAMPLE_FRACTION = 0.2
+INTERFACE_SAMPLE_FRACTION = _env_float("PINN_INTERFACE_SAMPLE_FRACTION", 0.25)
 INTERFACE_BAND = 0.05 * H
+# Bias a portion of patch samples toward the center.
+PATCH_CENTER_BIAS_FRACTION = 0.8
+PATCH_CENTER_BIAS_SHAPE = 3.0
 
 #Resampling/perturbation control
 SAMPLING_NOISE_SCALE = 0.08  # Larger perturbations widen coverage while still sampling residual-rich zones.
@@ -133,11 +199,28 @@ FOURIER_DIM = 0 # Number of Fourier frequencies
 FOURIER_SCALE = 1.0 # Standard deviation for frequency sampling
 
 # Hybrid / Parametric Training Data
-N_DATA_POINTS = 9000
-DATA_E_VALUES = [1.0, 5.0, 10.0]
-DATA_T1_VALUES = [0.05, 0.08]
-DATA_T2_VALUES = [0.05, 0.08]
+N_DATA_POINTS = _env_int("PINN_N_DATA_POINTS", 4000)
+DATA_E_VALUES = [1.0, 10.0]
+DATA_T1_VALUES = [0.02, 0.10]
+DATA_T2_VALUES = [0.02, 0.10]
+# Smaller evaluation grid for quick sweeps.
+EVAL_E_VALUES = [1.0, 10.0]
+EVAL_T1_VALUES = [0.02, 0.10]
+EVAL_T2_VALUES = [0.02, 0.10]
 USE_SUPERVISION_DATA = True
+
+DATA_E_VALUES = _env_float_list("PINN_DATA_E_VALUES", DATA_E_VALUES)
+DATA_T1_VALUES = _env_float_list("PINN_DATA_T1_VALUES", DATA_T1_VALUES)
+DATA_T2_VALUES = _env_float_list("PINN_DATA_T2_VALUES", DATA_T2_VALUES)
+
+EVAL_E_VALUES = _env_float_list("PINN_EVAL_E_VALUES", EVAL_E_VALUES)
+EVAL_T1_VALUES = _env_float_list("PINN_EVAL_T1_VALUES", EVAL_T1_VALUES)
+EVAL_T2_VALUES = _env_float_list("PINN_EVAL_T2_VALUES", EVAL_T2_VALUES)
+
+# FEM mesh resolution for supervision generation (lower for faster runs).
+FEM_NE_X = _env_int("PINN_FEM_NE_X", FEM_NE_X)
+FEM_NE_Y = _env_int("PINN_FEM_NE_Y", FEM_NE_Y)
+FEM_NE_Z = _env_int("PINN_FEM_NE_Z", FEM_NE_Z)
 
 # --- Explicit impact/friction physics controls ---
 # When enabled, restitution/friction influence boundary losses directly.

@@ -162,8 +162,23 @@ def compute_loss(model, data, device, weights=None):
     
     # Equilibrium: -div(sigma) = 0 (scale to stress units)
     residual = -div_sigma * getattr(config, "PDE_LENGTH_SCALE", 1.0)
-    
-    pde_loss = torch.mean(residual**2)
+
+    residual_sq = residual ** 2
+    if getattr(config, "PDE_DECOMPOSE_BY_LAYER", False):
+        z_vals = x_int[:, 2:3]
+        t1_vals = x_int[:, 4:5]
+        mask_layer1 = (z_vals <= t1_vals).squeeze(1)
+        mask_layer2 = ~mask_layer1
+        if mask_layer1.any() and mask_layer2.any():
+            pde_loss = residual_sq[mask_layer1].mean() + residual_sq[mask_layer2].mean()
+        elif mask_layer1.any():
+            pde_loss = residual_sq[mask_layer1].mean()
+        elif mask_layer2.any():
+            pde_loss = residual_sq[mask_layer2].mean()
+        else:
+            pde_loss = residual_sq.mean()
+    else:
+        pde_loss = residual_sq.mean()
     losses['pde'] = pde_loss
     total_loss += weights['pde'] * pde_loss
     

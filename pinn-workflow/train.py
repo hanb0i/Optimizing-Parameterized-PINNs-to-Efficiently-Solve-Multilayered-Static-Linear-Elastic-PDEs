@@ -12,6 +12,15 @@ import model
 import physics
 import matplotlib.pyplot as plt
 
+def _artifact_dir():
+    default_dir = os.path.dirname(os.path.abspath(__file__))
+    out_dir = os.getenv("PINN_OUT_DIR", default_dir)
+    os.makedirs(out_dir, exist_ok=True)
+    return out_dir
+
+def _artifact_path(filename: str) -> str:
+    return os.path.join(_artifact_dir(), filename)
+
 def _u_from_v(v, pts):
     e_scale = 0.5 * (pts[:, 3:4] + pts[:, 5:6])
     t_scale = pts[:, 4:5] + pts[:, 6:7]
@@ -71,7 +80,13 @@ def train():
     pinn = model.MultiLayerPINN().to(device)
     print(pinn)
     if os.getenv("PINN_WARM_START", "1") == "1":
-        ckpt_candidates = ["pinn_model.pth", os.path.join("..", "pinn_model.pth")]
+        ckpt_candidates = [
+            _artifact_path("pinn_model.pth"),
+            _artifact_path(os.path.join("checkpoints", "pinn_model_baseline_6p96.pth")),
+            os.path.join(os.path.dirname(_artifact_dir()), "pinn_model.pth"),
+            "pinn_model.pth",
+            os.path.join("..", "pinn_model.pth"),
+        ]
         for ckpt in ckpt_candidates:
             if os.path.exists(ckpt):
                 _load_compatible_state_dict(pinn, ckpt, device)
@@ -339,13 +354,13 @@ def train():
                   f"Time: {step_end - step_start:.4f}s")
         
         # Save model at every L-BFGS step
-        torch.save(pinn.state_dict(), "pinn_model.pth")
+        torch.save(pinn.state_dict(), _artifact_path("pinn_model.pth"))
             
     # Save Model and Loss Histories
-    torch.save(pinn.state_dict(), "pinn_model.pth")
+    torch.save(pinn.state_dict(), _artifact_path("pinn_model.pth"))
     loss_history = {'adam': adam_history, 'lbfgs': lbfgs_history}
-    np.save("loss_history.npy", loss_history)
-    print("Model saved.")
+    np.save(_artifact_path("loss_history.npy"), loss_history)
+    print(f"Model saved to {_artifact_path('pinn_model.pth')}")
     return pinn
 
 if __name__ == "__main__":
