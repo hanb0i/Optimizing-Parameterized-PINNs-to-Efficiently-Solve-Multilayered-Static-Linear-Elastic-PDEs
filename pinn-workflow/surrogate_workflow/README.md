@@ -1,6 +1,6 @@
-# Phase 1 Surrogate Workflow (Two-Layer PINN Baseline)
+# Phase 1 Surrogate Workflow (Three-Layer PINN Baseline)
 
-Trains a small MLP surrogate that maps two-layer design parameters to a scalar response
+Trains a small MLP surrogate that maps three-layer design parameters to a scalar response
 metric computed from the trained parametric PINN.
 
 ## What it does
@@ -23,4 +23,3 @@ python pinn-workflow/surrogate_workflow/run_phase1.py --regenerate --n-samples 5
 ```
 
 Outputs are saved in `pinn-workflow/surrogate_workflow/outputs` (ignored by git).
-

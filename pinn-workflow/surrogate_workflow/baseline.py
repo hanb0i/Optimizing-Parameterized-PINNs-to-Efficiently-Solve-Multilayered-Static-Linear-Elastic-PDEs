@@ -19,8 +19,8 @@ _DEVICE = None
 
 
 def _u_from_v(v: np.ndarray, pts: np.ndarray) -> np.ndarray:
-    e_scale = 0.5 * (pts[:, 3:4] + pts[:, 5:6])
-    t_scale = pts[:, 4:5] + pts[:, 6:7]
+    e_scale = (pts[:, 3:4] + pts[:, 5:6] + pts[:, 7:8]) / 3.0
+    t_scale = pts[:, 4:5] + pts[:, 6:7] + pts[:, 8:9]
     e_pow = float(getattr(pc, "E_COMPLIANCE_POWER", 1.0))
     alpha = float(getattr(pc, "THICKNESS_COMPLIANCE_ALPHA", 0.0))
     scale = float(getattr(pc, "DISPLACEMENT_COMPLIANCE_SCALE", 1.0))
@@ -66,12 +66,12 @@ def _get_pinn():
 
 def compute_response(mu: np.ndarray) -> float:
     """
-    mu: [E1, t1, E2, t2]
+    mu: [E1, t1, E2, t2, E3, t3]
     Returns: peak downward vertical displacement on the top surface (positive scalar).
     """
     pinn, device = _get_pinn()
-    e1_val, t1_val, e2_val, t2_val = [float(v) for v in mu]
-    thickness = float(t1_val) + float(t2_val)
+    e1_val, t1_val, e2_val, t2_val, e3_val, t3_val = [float(v) for v in mu]
+    thickness = float(t1_val) + float(t2_val) + float(t3_val)
 
     nx = int(os.getenv("SURROGATE_TOP_NX", "11"))
     x = np.linspace(float(pc.LOAD_PATCH_X[0]), float(pc.LOAD_PATCH_X[1]), nx)
@@ -93,6 +93,8 @@ def compute_response(mu: np.ndarray) -> float:
             np.full_like(x_flat, t1_val),
             np.full_like(x_flat, e2_val),
             np.full_like(x_flat, t2_val),
+            np.full_like(x_flat, e3_val),
+            np.full_like(x_flat, t3_val),
             np.full_like(x_flat, r_ref),
             np.full_like(x_flat, mu_ref),
             np.full_like(x_flat, v0_ref),
@@ -105,4 +107,3 @@ def compute_response(mu: np.ndarray) -> float:
     u = _u_from_v(v, pts)
     uz = u[:, 2]
     return float(-np.min(uz))
-

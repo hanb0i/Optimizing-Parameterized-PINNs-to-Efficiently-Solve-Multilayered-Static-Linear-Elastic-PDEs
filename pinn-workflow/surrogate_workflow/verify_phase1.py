@@ -53,27 +53,48 @@ def _plot_rel_error_hist(rel_err: np.ndarray, out_path: str):
     plt.close()
 
 
-def _plot_e1_e2_grid(model, dataset: dict, device: torch.device, out_path: str, n: int):
-    e1_low, e1_high = config.DESIGN_RANGES["E1"]
-    e2_low, e2_high = config.DESIGN_RANGES["E2"]
-    e1_vals = np.linspace(e1_low, e1_high, n)
-    e2_vals = np.linspace(e2_low, e2_high, n)
+def _plot_param_grid(
+    model,
+    dataset: dict,
+    device: torch.device,
+    out_path: str,
+    x_param: str,
+    y_param: str,
+    n: int,
+):
+    if x_param not in config.DESIGN_RANGES or y_param not in config.DESIGN_RANGES:
+        raise ValueError(f"Params must be in {list(config.DESIGN_RANGES.keys())}")
+    if x_param == y_param:
+        raise ValueError("x-param and y-param must differ.")
+
+    x_low, x_high = config.DESIGN_RANGES[x_param]
+    y_low, y_high = config.DESIGN_RANGES[y_param]
+    x_vals = np.linspace(x_low, x_high, n)
+    y_vals = np.linspace(y_low, y_high, n)
 
     mu_mid = config.mid_design()
-    t1_mid = float(mu_mid[config.DESIGN_PARAMS.index("t1")])
-    t2_mid = float(mu_mid[config.DESIGN_PARAMS.index("t2")])
+    param_names = list(config.DESIGN_RANGES.keys())
+    idx_x = param_names.index(x_param)
+    idx_y = param_names.index(y_param)
 
     y_true = np.zeros((n, n), dtype=float)
     y_pred = np.zeros((n, n), dtype=float)
-    for i, e1 in enumerate(e1_vals):
-        for j, e2 in enumerate(e2_vals):
-            mu = np.array([e1, t1_mid, e2, t2_mid], dtype=float)
+    for i, xv in enumerate(x_vals):
+        for j, yv in enumerate(y_vals):
+            mu = mu_mid.copy()
+            mu[idx_x] = xv
+            mu[idx_y] = yv
             y_true[i, j] = baseline.compute_response(mu)
             x_norm, _, _ = data_utils.normalize_inputs(mu.reshape(1, -1), config.DESIGN_RANGES)
             y_norm = surrogate.predict(model, x_norm, device)[0]
-            y_pred[i, j] = validate.denormalize_y(y_norm, dataset["y_min"], dataset["y_max"])
+            y_pred[i, j] = validate.denormalize_y(
+                y_norm,
+                dataset["y_min"],
+                dataset["y_max"],
+                dataset.get("y_transform", "identity"),
+                dataset.get("y_eps", 1e-12),
+            )
 
-    abs_err = np.abs(y_pred - y_true)
     rel_err = _relative_error(y_true, y_pred)
 
     fig, axes = plt.subplots(1, 3, figsize=(15, 4))
@@ -92,12 +113,12 @@ def _plot_e1_e2_grid(model, dataset: dict, device: torch.device, out_path: str, 
     for ax in axes:
         ax.set_xticks([0, n - 1])
         ax.set_yticks([0, n - 1])
-        ax.set_xticklabels([f"{e2_low:g}", f"{e2_high:g}"])
-        ax.set_yticklabels([f"{e1_low:g}", f"{e1_high:g}"])
-        ax.set_xlabel("E2")
-        ax.set_ylabel("E1")
+        ax.set_xticklabels([f"{x_low:g}", f"{x_high:g}"])
+        ax.set_yticklabels([f"{y_low:g}", f"{y_high:g}"])
+        ax.set_xlabel(x_param)
+        ax.set_ylabel(y_param)
 
-    fig.suptitle(f"Mid-thickness grid: t1={t1_mid:.3f}, t2={t2_mid:.3f}", y=1.02)
+    fig.suptitle(f"Mid-design grid: {y_param} vs {x_param}", y=1.02)
     fig.tight_layout()
     fig.savefig(out_path, dpi=160, bbox_inches="tight")
     plt.close(fig)
@@ -106,7 +127,9 @@ def _plot_e1_e2_grid(model, dataset: dict, device: torch.device, out_path: str, 
 def main():
     parser = argparse.ArgumentParser(description="Verify Phase 1 surrogate outputs")
     parser.add_argument("--device", default=None, help="Override device (cpu/cuda/mps)")
-    parser.add_argument("--grid", type=int, default=11, help="E1/E2 grid resolution for verification plot")
+    parser.add_argument("--grid", type=int, default=11, help="Grid resolution for verification plot")
+    parser.add_argument("--x-param", default="E1", help="X-axis design param for grid plot")
+    parser.add_argument("--y-param", default="E3", help="Y-axis design param for grid plot")
     args = parser.parse_args()
 
     device = torch.device(args.device) if args.device else (
@@ -145,11 +168,13 @@ def main():
     print(f"Test rel error p50/p95/worst: {p50:.2f}% / {p95:.2f}% / {worst:.2f}%")
 
     _plot_rel_error_hist(rel_err, os.path.join(config.PLOTS_DIR, "test_rel_error_hist.png"))
-    _plot_e1_e2_grid(
+    _plot_param_grid(
         model,
         dataset,
         device,
-        os.path.join(config.PLOTS_DIR, "grid_e1_e2_mid_thickness.png"),
+        os.path.join(config.PLOTS_DIR, f"grid_{args.y_param}_vs_{args.x_param}.png"),
+        x_param=str(args.x_param),
+        y_param=str(args.y_param),
         n=int(args.grid),
     )
 
