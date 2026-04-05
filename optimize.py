@@ -1,6 +1,4 @@
-"""
-Phase 6 — Gradient-based design optimization through the surrogate.
-"""
+"""Gradient-based design optimization through the surrogate model."""
 
 from __future__ import annotations
 
@@ -25,10 +23,6 @@ class OptStep:
 
 
 def _objective(y_pred: torch.Tensor, ocfg: OptimizeConfig) -> torch.Tensor:
-    """
-    y_pred order must be: [y_strain_energy, y_accel_peak, y_disp_peak].
-    """
-
     y_strain = y_pred[..., 0]
     y_accel = y_pred[..., 1]
     y_disp = y_pred[..., 2]
@@ -47,12 +41,6 @@ def optimize_design(
     *,
     init_mu_norm: Optional[torch.Tensor] = None,
 ) -> Tuple[List[Dict[str, float]], List[OptStep]]:
-    """
-    Returns (top_k_candidates, trajectory).
-
-    Each candidate is a dict mapping param_name -> raw value.
-    """
-
     device = cfg.device
     ocfg = cfg.optimize
 

@@ -1,3 +1,11 @@
+"""Utility to inspect PINN checkpoint structure.
+
+Prints the shape of all tensors in the checkpoint for debugging
+and compatibility checking.
+
+Usage:
+    python inspect_checkpoint.py
+"""
 
 import torch
 import os

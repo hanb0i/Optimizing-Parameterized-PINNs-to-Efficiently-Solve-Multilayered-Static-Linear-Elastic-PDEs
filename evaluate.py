@@ -1,6 +1,4 @@
-"""
-Phase 7 — Physics validation, repeated impacts with damage, and active-learning loop.
-"""
+"""Evaluation utilities for the surrogate model and design optimization."""
 
 from __future__ import annotations
 
@@ -52,12 +50,6 @@ class DamageState:
 
 
 def apply_damage_to_mu(mu: MuType, bounds: Bounds, dcfg: DamageConfig, state: DamageState) -> MuType:
-    """
-    Default damage model: scale any configured "modulus" parameters by (1 - clamp(D)).
-
-    This is intentionally modular because mu semantics are application-specific.
-    """
-
     if not dcfg.modulus_param_names:
         return mu
 
@@ -86,11 +78,6 @@ def run_repeated_impacts(
     metrics_cfg: MetricsConfig,
     dcfg: DamageConfig,
 ) -> List[Dict[str, Any]]:
-    """
-    Sequential impacts with accumulated smooth damage:
-      D_{k+1} = D_k + ∫∫ softplus(ε-ε_crit) dx dt
-    """
-
     if not dcfg.enabled:
         raise ValueError("DamageConfig.enabled is False.")
 
@@ -138,10 +125,6 @@ def active_learning_refine(
     candidate_mus: Sequence[Mapping[str, float]],
     surrogate: SurrogateBundle,
 ) -> Optional[SurrogateBundle]:
-    """
-    If surrogate discrepancies are large on evaluated candidates, add new points and retrain.
-    """
-
     if not cfg.active_learning.enabled:
         return None
 
@@ -176,7 +159,6 @@ def active_learning_refine(
     y_min = y_raw.min(dim=0).values
     y_max = y_raw.max(dim=0).values
 
-    # Reuse split sizes from the newly created base dataset
     from dataset import build_supervised_dataset
 
     ds2 = build_supervised_dataset(
@@ -202,10 +184,6 @@ def discrepancy_report(
     target_names: Sequence[str] = ("y_strain_energy", "y_accel_peak", "y_disp_peak"),
     relerr_floor: float = 1e-6,
 ) -> Dict[str, Any]:
-    """
-    Evaluate physics vs surrogate on a set of mu dicts and return summary stats.
-    """
-
     if not mus:
         raise ValueError("mus is empty")
 
@@ -238,10 +216,6 @@ def iterative_active_learning(
     initial_surrogate: SurrogateBundle,
     dataset_n: int,
 ) -> Tuple[SurrogateBundle, List[Dict[str, Any]]]:
-    """
-    Run multiple refine iterations until candidate discrepancies fall below tolerance.
-    """
-
     logs: List[Dict[str, Any]] = []
     surrogate = initial_surrogate
 

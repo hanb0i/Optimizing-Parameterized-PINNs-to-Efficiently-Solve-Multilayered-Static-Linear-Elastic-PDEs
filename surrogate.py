@@ -1,6 +1,4 @@
-"""
-Phase 5 — Differentiable surrogate model: mu -> y_hat.
-"""
+"""Differentiable surrogate model for design optimization."""
 
 from __future__ import annotations
 
@@ -233,4 +231,3 @@ def train_surrogate(dataset: SupervisedDataset, bounds: Bounds, cfg: PipelineCon
 
     hist = TrainHistory(train_loss=train_loss_hist, val_loss=val_loss_hist, best_epoch=best_epoch)
     return bundle, hist, metrics
-

@@ -1,10 +1,4 @@
-"""
-Central configuration for the Phase 4–7 impact-attenuation pipeline.
-
-All values are intentionally generic and safe defaults for running the end-to-end
-synthetic example in `run_pipeline.py`. When swapping in a real PiNN/FEA runner,
-update bounds, caps, and any metric-region definitions as needed.
-"""
+"""Configuration classes for the surrogate model pipeline."""
 
 from __future__ import annotations
 
@@ -39,7 +33,7 @@ class Bounds:
 class SurrogateConfig:
     hidden_layers: int = 3
     hidden_units: int = 128
-    activation: str = "gelu"  # "tanh" | "gelu" | "relu"
+    activation: str = "gelu"
 
     use_fourier_features: bool = False
     fourier_features_dim: int = 64

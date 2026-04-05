@@ -1,19 +1,4 @@
-"""
-Phase 4 — Performance mapping: simulation outputs -> scalar metrics.
-
-This module is written to work with either a PiNN or an FEA wrapper as long as
-the physics runner returns a dict-like `sim_outputs` with (some of) the keys:
-  - "eps": strain field, shape [Nt, Npts] or [Nt, Nelem]
-  - "u": displacement field, shape [Nt, Npts] or [Nt, Npts, dim]
-  - "u_prot": protected displacement time series, shape [Nt]
-  - "dt": scalar timestep (float or 0-d tensor)
-  - "coords": spatial coordinates (optional, for strain-from-u hook)
-  - "connectivity": mesh connectivity (optional, for strain-from-u hook)
-  - "weights"/"volumes": spatial integration weights, shape [Npts] or [Nelem]
-
-All computations are torch-first and differentiable when inputs are torch
-tensors.
-"""
+"""Performance metrics computation from physics simulation outputs."""
 
 from __future__ import annotations
 
@@ -34,15 +19,6 @@ def _as_tensor(x: Any, *, device: Optional[torch.device] = None, dtype: torch.dt
 
 
 def compute_strain(u: torch.Tensor, coords: Optional[torch.Tensor] = None, connectivity: Any = None) -> torch.Tensor:
-    """
-    Placeholder hook to compute strain from displacement.
-
-    For an FEA mesh you might compute element strains from shape function
-    gradients. For a PiNN you might compute strain via autograd w.r.t. coords.
-
-    Expected output shape: [Nt, Npts] or [Nt, Nelem].
-    """
-
     raise NotImplementedError(
         "Strain was not provided in sim_outputs['eps'] and the default "
         "compute_strain hook is not implemented. Provide sim_outputs['eps'] or "
@@ -79,12 +55,6 @@ def _slice_time_window(x: torch.Tensor, dt: torch.Tensor, t_max: Optional[float]
 
 
 def second_derivative_central(u_t: torch.Tensor, dt: TensorLike) -> torch.Tensor:
-    """
-    Stable discrete 2nd derivative (central difference on interior points).
-
-    Returns a tensor with the same shape as `u_t` (time dimension first).
-    """
-
     u_t = _as_tensor(u_t)
     dt_t = _as_tensor(dt, device=u_t.device, dtype=u_t.dtype)
     if u_t.ndim != 1:
@@ -141,15 +111,6 @@ def _get_eps(sim_outputs: Mapping[str, Any], cfg: MetricsConfig, device: torch.d
 
 
 def compute_metrics(sim_outputs: Mapping[str, Any], cfg: MetricsConfig) -> Dict[str, torch.Tensor]:
-    """
-    Compute scalar metrics from physics outputs.
-
-    Required outputs:
-      - strain energy: needs eps or (u + strain_fn)
-      - accel/displacement: needs u_prot or (u + protected_index)
-      - dt: sim_outputs['dt'] (float or tensor)
-    """
-
     device = None
     for key in ("eps", "u", "u_prot"):
         val = sim_outputs.get(key)

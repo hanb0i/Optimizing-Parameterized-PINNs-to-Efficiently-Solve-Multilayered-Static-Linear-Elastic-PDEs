@@ -1,6 +1,4 @@
-"""
-Phase 5 — Dataset generation for surrogate training.
-"""
+"""Dataset generation for surrogate model training."""
 
 from __future__ import annotations
 
@@ -48,10 +46,6 @@ def denormalize_minmax(x_norm: torch.Tensor, x_min: torch.Tensor, x_max: torch.T
 
 
 def sample_mu(n: int, bounds: Bounds, *, seed: int = 0) -> torch.Tensor:
-    """
-    Uniform random sampling in raw parameter space (bounds.low/high).
-    """
-
     g = torch.Generator(device=bounds.low.device)
     g.manual_seed(int(seed))
     u = torch.rand((n, bounds.dim), generator=g, device=bounds.low.device)
@@ -121,13 +115,6 @@ def build_supervised_dataset(
 
 
 def bounds_anchor_points(bounds: Bounds) -> torch.Tensor:
-    """
-    Anchor points that guarantee x_min/x_max match bounds for normalization stability.
-
-    Returns shape [2*dim, dim] where each point sets one parameter to low/high and
-    others to mid.
-    """
-
     mid = 0.5 * (bounds.low + bounds.high)
     pts = []
     for j in range(bounds.dim):
@@ -149,15 +136,6 @@ def generate_dataset(
     seed: int = 0,
     target_names: Optional[List[str]] = None,
 ) -> SupervisedDataset:
-    """
-    Generate (X_mu, Y_metrics) by sampling mu, running physics, and computing metrics.
-
-    Targets are the 3 required recommendation metrics by default:
-      - y_strain_energy
-      - y_accel_peak
-      - y_disp_peak
-    """
-
     target_names = target_names or ["y_strain_energy", "y_accel_peak", "y_disp_peak"]
 
     x_raw = sample_mu(n, bounds, seed=seed).to(cfg.device)

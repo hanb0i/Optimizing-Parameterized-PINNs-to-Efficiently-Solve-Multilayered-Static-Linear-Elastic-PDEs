@@ -1,3 +1,5 @@
+"""Training script for the Physics-Informed Neural Network (PINN)."""
+
 import torch
 import torch.optim as optim
 import numpy as np
@@ -12,14 +14,17 @@ import model
 import physics
 import matplotlib.pyplot as plt
 
+
 def _artifact_dir():
     default_dir = os.path.dirname(os.path.abspath(__file__))
     out_dir = os.getenv("PINN_OUT_DIR", default_dir)
     os.makedirs(out_dir, exist_ok=True)
     return out_dir
 
+
 def _artifact_path(filename: str) -> str:
     return os.path.join(_artifact_dir(), filename)
+
 
 def _u_from_v(v, pts):
     e_scale = (pts[:, 3:4] + pts[:, 5:6] + pts[:, 7:8]) / 3.0
@@ -29,6 +34,7 @@ def _u_from_v(v, pts):
     scale = float(getattr(config, "DISPLACEMENT_COMPLIANCE_SCALE", 1.0))
     h_ref = float(getattr(config, "H", 1.0))
     return scale * v / (e_scale ** e_pow) * (h_ref / np.clip(t_scale, 1e-8, None)) ** alpha
+
 
 def _load_compatible_state_dict(pinn, ckpt_path, device):
     sd = torch.load(ckpt_path, map_location=device, weights_only=True)
@@ -47,6 +53,7 @@ def _load_compatible_state_dict(pinn, ckpt_path, device):
     if unexpected:
         print(f"  Unexpected keys: {len(unexpected)}")
 
+
 def get_loss_weights(epoch, use_hard_bc=True):
     weights = dict(config.WEIGHTS)
     if config.WEIGHT_RAMP_EPOCHS > 0 and epoch < config.WEIGHT_RAMP_EPOCHS:
@@ -59,6 +66,7 @@ def get_loss_weights(epoch, use_hard_bc=True):
         weights['pde'] *= config.SOFT_MODE_PDE_WEIGHT_SCALE
         weights['load'] *= config.SOFT_MODE_LOAD_WEIGHT_SCALE
     return weights
+
 
 def train():
     requested_device = os.getenv("PINN_DEVICE")
@@ -76,7 +84,6 @@ def train():
     epochs_adam = int(os.getenv("PINN_EPOCHS_ADAM", str(config.EPOCHS_ADAM)))
     epochs_lbfgs = int(os.getenv("PINN_EPOCHS_LBFGS", str(config.EPOCHS_LBFGS)))
     
-    # Initialize Model
     pinn = model.MultiLayerPINN().to(device)
     print(pinn)
     if os.getenv("PINN_WARM_START", "1") == "1":
@@ -95,21 +102,16 @@ def train():
         config.USE_HARD_SIDE_BC = False
         pinn.set_hard_bc(False)
     
-    # Initialize Optimizers
-    # SOAP improves conditioning for stiff, multi-term PINN losses; prefer it when Adam/AdamW stagnates.
-    # precondition_frequency controls how often curvature stats are refreshed: lower is more stable, higher is cheaper.
     optimizer_adam = soap.SOAP(
         pinn.parameters(),
         lr=config.LEARNING_RATE,
         betas=(0.95, 0.95),
-        weight_decay=0.0, #was 1e-2
+        weight_decay=0.0,
         precondition_frequency=config.SOAP_PRECONDITION_FREQUENCY,
     )
     
-    # Learning rate scheduler: reduce by 0.3 every epochs_adam//5 steps
     scheduler = optim.lr_scheduler.StepLR(optimizer_adam, step_size=config.EPOCHS_ADAM//5, gamma=0.3)
     
-    # Load FEM data for comparison
     print("Loading FEM solution for comparison...")
     try:
         fem_data = np.load("fea_solution.npy", allow_pickle=True).item()
@@ -118,7 +120,6 @@ def train():
         Z_fea = fem_data['z']
         U_fea = fem_data['u']
         
-        # Prepare FEM evaluation grid using homogeneous E1=E2 plus reference impact params.
         thickness_ref = float(np.max(Z_fea))
         pts_fea = np.stack([X_fea.ravel(), Y_fea.ravel(), Z_fea.ravel()], axis=1)
         e1_ones = np.ones((pts_fea.shape[0], 1)) * config.E_vals[0]
@@ -145,10 +146,8 @@ def train():
         print("FEM solution not found. Training without FEM comparison.")
         fem_available = False
     
-    # Data Container
     training_data = data.get_data()
 
-    # Load and attach Parametric/Hybrid Supervision Data
     if getattr(config, "USE_SUPERVISION_DATA", True) and hasattr(config, "N_DATA_POINTS") and hasattr(config, "DATA_E_VALUES"):
         print(f"Loading hybrid supervision data (N={config.N_DATA_POINTS}, E={config.DATA_E_VALUES})...")
         x_data, u_data = data.load_fem_supervision_data()
@@ -158,7 +157,6 @@ def train():
     else:
         print("Supervision data disabled or not configured; training physics-only.")
  
-    # History - store all loss components separately for each optimizer
     adam_history = {
         'total': [],
         'pde': [],
@@ -213,7 +211,6 @@ def train():
                     print("Switching to soft side BCs (mask off) to lift deflection.")
         
         if epoch % 500 == 0 and epoch > 0:
-            # Compute residuals for adaptive sampling
             residuals = physics.compute_residuals(pinn, training_data, device)
             training_data = data.get_data(prev_data=training_data, residuals=residuals)
             print(f"  Resampled with residual-based adaptive sampling at epoch {epoch}")
@@ -222,7 +219,7 @@ def train():
         loss_val, losses = physics.compute_loss(pinn, training_data, device, weights=weights)
         loss_val.backward()
         optimizer_adam.step()
-        scheduler.step()  # Update learning rate
+        scheduler.step()
         
         adam_history['total'].append(loss_val.item())
         adam_history['pde'].append(losses['pde'].item())
@@ -243,12 +240,10 @@ def train():
             last_time = current_time
             current_lr = scheduler.get_last_lr()[0]
             
-            # Compute FEM error every 100 epochs
             if fem_available:
                 with torch.no_grad():
                     v_pinn_flat = pinn(pts_fea_tensor, 0).cpu().numpy()
                     u_pinn_flat = _u_from_v(v_pinn_flat, pts_fea)
-                     
                     diff = np.abs(u_pinn_flat - u_fea_flat)
                     mae = np.mean(diff)
                     max_err = np.max(diff)
@@ -278,10 +273,9 @@ def train():
                       f"Interface: {losses.get('interface_u', torch.tensor(0.0)).item():.6f} | "
                       f"ImpactInv: {losses.get('impact_invariance', torch.tensor(0.0)).item():.6f} | "
                       f"LR: {current_lr:.2e} | Time: {step_duration:.4f}s")
-            
+        
     print(f"SOAP Pretraining Complete. Total Time: {time.time() - start_time:.2f}s")
     
-    # L-BFGS Fine-Tuning
     print("Starting L-BFGS Fine-Tuning...")
     config.USE_HARD_SIDE_BC = False
     pinn.set_hard_bc(False)
@@ -297,8 +291,6 @@ def train():
     print("Using fixed collocation set during L-BFGS for stability.")
     
     for i in range(num_lbfgs_steps):
-        # Keep collocation points fixed during L-BFGS for stability
-        
         step_start = time.time()
         def closure():
             optimizer_lbfgs.zero_grad()
@@ -309,7 +301,6 @@ def train():
         loss_val = optimizer_lbfgs.step(closure)
         step_end = time.time()
         
-        # Compute losses for logging
         _, losses = physics.compute_loss(pinn, training_data, device, weights=config.WEIGHTS)
         lbfgs_history['total'].append(loss_val.item())
         lbfgs_history['pde'].append(losses['pde'].item())
@@ -324,7 +315,6 @@ def train():
         lbfgs_history['friction_stick'].append(losses.get('friction_stick', torch.tensor(0.0)).item())
         lbfgs_history['interface_u'].append(losses.get('interface_u', torch.tensor(0.0)).item())
         
-        # Compute FEM error and print
         if fem_available:
             with torch.no_grad():
                 v_pinn_flat = pinn(pts_fea_tensor, 0).cpu().numpy()
@@ -357,15 +347,14 @@ def train():
                   f"ImpactInv: {losses.get('impact_invariance', torch.tensor(0.0)).item():.6e} | "
                   f"Time: {step_end - step_start:.4f}s")
         
-        # Save model at every L-BFGS step
         torch.save(pinn.state_dict(), _artifact_path("pinn_model.pth"))
             
-    # Save Model and Loss Histories
     torch.save(pinn.state_dict(), _artifact_path("pinn_model.pth"))
     loss_history = {'adam': adam_history, 'lbfgs': lbfgs_history}
     np.save(_artifact_path("loss_history.npy"), loss_history)
     print(f"Model saved to {_artifact_path('pinn_model.pth')}")
     return pinn
+
 
 if __name__ == "__main__":
     train()

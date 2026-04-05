@@ -1,8 +1,9 @@
+"""Validation script comparing 3-layer PINN predictions against FEA solutions."""
+
 import os
 import sys
 
 import matplotlib
-
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
@@ -38,17 +39,6 @@ def _ref_params():
         float(getattr(config, "FRICTION_REF", 0.3)),
         float(getattr(config, "IMPACT_VELOCITY_REF", 1.0)),
     )
-
-
-def _print_env():
-    keys = sorted([k for k in os.environ.keys() if k.startswith("PINN_")] + ["MPLCONFIGDIR"])
-    printed = set()
-    for k in keys:
-        if k in printed:
-            continue
-        printed.add(k)
-        if k in os.environ:
-            print(f"{k}={os.environ[k]}")
 
 
 def _load_pinn(device):
@@ -128,17 +118,7 @@ def _plot_case(case_name, output_dir, pinn, device, e1, e2, e3, t1, t2, t3):
     x_grid, y_grid = np.meshgrid(x_nodes, y_nodes, indexing="ij")
     top_z = np.full(x_grid.size, thickness)
     u_pinn_top = _predict_pinn(
-        pinn,
-        device,
-        x_grid.ravel(),
-        y_grid.ravel(),
-        top_z,
-        e1,
-        e2,
-        e3,
-        t1,
-        t2,
-        t3,
+        pinn, device, x_grid.ravel(), y_grid.ravel(), top_z, e1, e2, e3, t1, t2, t3
     ).reshape(len(x_nodes), len(y_nodes), 3)
 
     u_z_fea_top = u_fea[:, :, -1, 2]
@@ -176,17 +156,7 @@ def _plot_case(case_name, output_dir, pinn, device, e1, e2, e3, t1, t2, t3):
     x_cross, z_cross = np.meshgrid(x_nodes, z_nodes, indexing="ij")
     y_cross = np.full(x_cross.size, y_nodes[mid_y_idx])
     u_pinn_cross = _predict_pinn(
-        pinn,
-        device,
-        x_cross.ravel(),
-        y_cross,
-        z_cross.ravel(),
-        e1,
-        e2,
-        e3,
-        t1,
-        t2,
-        t3,
+        pinn, device, x_cross.ravel(), y_cross, z_cross.ravel(), e1, e2, e3, t1, t2, t3
     ).reshape(len(x_nodes), len(z_nodes), 3)
 
     u_z_fea_cross = u_fea[:, mid_y_idx, :, 2]
@@ -246,17 +216,8 @@ def _sweep(output_dir, pinn, device, e_values, t1_values, t2_values, t3_values):
                             thickness = float(t1) + float(t2) + float(t3)
                             x_grid, y_grid = np.meshgrid(x_nodes, y_nodes, indexing="ij")
                             u_pinn_top = _predict_pinn(
-                                pinn,
-                                device,
-                                x_grid.ravel(),
-                                y_grid.ravel(),
-                                np.full(x_grid.size, thickness),
-                                e1,
-                                e2,
-                                e3,
-                                t1,
-                                t2,
-                                t3,
+                                pinn, device, x_grid.ravel(), y_grid.ravel(), np.full(x_grid.size, thickness),
+                                e1, e2, e3, t1, t2, t3
                             ).reshape(len(x_nodes), len(y_nodes), 3)
                             u_z_fea_top = np.array(u_fea)[:, :, -1, 2]
                             u_z_pinn_top = u_pinn_top[:, :, 2]
@@ -267,7 +228,6 @@ def _sweep(output_dir, pinn, device, e_values, t1_values, t2_values, t3_values):
     worst_case, worst_mae = cases[worst_idx]
     mean_mae = float(np.mean(mae_pcts)) if len(mae_pcts) else 0.0
 
-    # Lightweight visualization: for the thinnest thickness triplet, plot E1 vs E3 slices for each E2.
     t1_min, t2_min, t3_min = min(t1_values), min(t2_values), min(t3_values)
     for e2 in e_values:
         grid = np.zeros((len(e_values), len(e_values)))
@@ -286,20 +246,12 @@ def _sweep(output_dir, pinn, device, e_values, t1_values, t2_values, t3_values):
         ax.set_yticklabels([f"{val:g}" for val in e_values])
         ax.set_xlabel("E3")
         ax.set_ylabel("E1")
-        ax.set_title(
-            f"Three-Layer PINN vs FEA (E2={e2:g})\nTop-Surface MAE at t=[{t1_min:g},{t2_min:g},{t3_min:g}]"
-        )
+        ax.set_title(f"Three-Layer PINN vs FEA (E2={e2:g})\nTop-Surface MAE at t=[{t1_min:g},{t2_min:g},{t3_min:g}]")
         for i in range(len(e_values)):
             for j in range(len(e_values)):
                 ax.text(j, i, f"{grid[i, j]:.2f}", ha="center", va="center", color="white", fontsize=9)
         fig.tight_layout()
-        fig.savefig(
-            os.path.join(
-                output_dir,
-                f"three_layer_sweep_tmin_E2{e2:g}.png",
-            ),
-            dpi=160,
-        )
+        fig.savefig(os.path.join(output_dir, f"three_layer_sweep_tmin_E2{e2:g}.png"), dpi=160)
         plt.close(fig)
 
     return mean_mae, float(worst_mae), worst_case
@@ -318,7 +270,6 @@ def main():
     output_dir = os.path.join(PINN_WORKFLOW_DIR, "visualization_three_layer")
     os.makedirs(output_dir, exist_ok=True)
 
-    _print_env()
     pinn = _load_pinn(device)
 
     if hasattr(config, "EVAL_E_VALUES"):
