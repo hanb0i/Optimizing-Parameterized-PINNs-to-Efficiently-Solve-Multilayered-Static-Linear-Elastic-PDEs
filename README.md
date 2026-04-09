@@ -32,6 +32,7 @@ This repository implements a complete pipeline for:
 │   └── solver/
 │       └── fem_solver.py  # Hex8 FEM implementation
 └── pinn-workflow-2layer/  # 2-layer PINN (legacy)
+    └── surrogate_workflow/ # 2-layer surrogate workflow
 ```
 
 ## Quick Start
@@ -63,6 +64,12 @@ python compare_three_layer_pinn_fem.py
 
 # 2-layer validation (requires 2-layer model)
 python compare_two_layer_pinn_fem.py
+```
+
+### Generate Paper Figures
+
+```bash
+python3 graphs/make_all_graphs.py
 ```
 
 ### Run Design Optimization Pipeline
