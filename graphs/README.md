@@ -6,14 +6,20 @@ This folder contains reproducible scripts to generate IEEE-style, paper-ready fi
 
 From the repo root:
 
+- Generate all figures (auto-generates missing surrogate artifacts by default):
+  - `python3 graphs/make_all_graphs.py`
 - Geometry and boundary conditions schematic:
   - `python3 graphs/scripts/plot_geometry_bc.py`
 - Ablation table (placeholder until ablation results exist):
   - `python3 graphs/scripts/plot_ablation_table.py`
 - Error heatmap (uses the trained 3-layer PINN checkpoint):
   - `python3 graphs/scripts/plot_error_heatmap.py`
-- Surrogate verification scatter (uses surrogate workflow outputs):
+- Surrogate verification scatter (3-layer, uses surrogate workflow outputs):
   - `python3 graphs/scripts/plot_surrogate_verification.py`
+- Surrogate verification scatter (2-layer):
+  - `python3 graphs/scripts/plot_surrogate_verification_two_layer.py`
+- Surrogate-vs-PINN verification table (2-layer + 3-layer):
+  - `python3 graphs/scripts/plot_surrogate_verification_results.py`
 
 All figures are written to `graphs/figures/` as both PNG and PDF.
 
@@ -63,3 +69,14 @@ These are produced by the surrogate workflow:
 
 If these files are missing, the script emits a placeholder plot and prints what is needed.
 
+### 2-layer surrogate verification scatter
+
+Requires:
+
+- `pinn-workflow-2layer/surrogate_workflow/outputs/phase1_dataset.npz`
+- `pinn-workflow-2layer/surrogate_workflow/outputs/surrogate_model.pt`
+
+Generate via:
+
+- `python3 pinn-workflow-2layer/surrogate_workflow/run_phase1.py --regenerate --device cpu`
+- `python3 pinn-workflow-2layer/surrogate_workflow/verify_phase1.py --device cpu`
