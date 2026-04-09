@@ -1,4 +1,8 @@
-"""Validation script comparing 2-layer PINN predictions against FEA solutions."""
+"""Validation script comparing 2-layer PINN predictions against FEA solutions.
+
+Note: This script uses the dedicated 2-layer workflow in `pinn-workflow-2layer/`
+to avoid ambiguity with the 3-layer parameterization.
+"""
 
 import os
 import sys
@@ -10,7 +14,7 @@ import numpy as np
 import torch
 
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
-PINN_WORKFLOW_DIR = os.path.join(REPO_ROOT, "pinn-workflow")
+PINN_WORKFLOW_DIR = os.path.join(REPO_ROOT, "pinn-workflow-2layer")
 FEA_SOLVER_DIR = os.path.join(REPO_ROOT, "fea-workflow", "solver")
 
 if PINN_WORKFLOW_DIR not in sys.path:
@@ -25,7 +29,7 @@ import fem_solver
 
 def _load_pinn(device):
     pinn = model.MultiLayerPINN().to(device)
-    model_path = os.path.join(PINN_WORKFLOW_DIR, "pinn_model.pth")
+    model_path = os.getenv("PINN_MODEL_PATH", os.path.join(PINN_WORKFLOW_DIR, "pinn_model.pth"))
     sd = torch.load(model_path, map_location=device, weights_only=True)
     sd = model.adapt_legacy_state_dict(sd, pinn.state_dict())
     pinn.load_state_dict(sd, strict=False)
@@ -57,7 +61,7 @@ def _run_fea(e1, e2, t1, t2, ne_x=10, ne_y=10, ne_z=4):
             "y_end": config.LOAD_PATCH_Y[1] / config.Ly,
         },
     }
-    return fem_solver.solve_three_layer_fem(cfg)
+    return fem_solver.solve_two_layer_fem(cfg)
 
 
 def _ref_params():
@@ -116,17 +120,26 @@ def main():
     else:
         device = torch.device("cpu")
 
-    output_dir = os.path.join(PINN_WORKFLOW_DIR, "visualization")
+    # Keep 2-layer plots in a stable location even if the 2-layer workflow is separate.
+    output_dir = os.path.join(REPO_ROOT, "pinn-workflow", "visualization_two_layer")
     os.makedirs(output_dir, exist_ok=True)
 
     pinn = _load_pinn(device)
 
-    e_range = getattr(config, "E_RANGE", [1.0, 10.0])
-    e_values = [float(e_range[0]), float(e_range[-1])]
-    t_values = [0.05, 0.08]
+    e_values = [float(v) for v in getattr(config, "EVAL_E_VALUES", getattr(config, "E_RANGE", [1.0, 10.0]))]
+    t1_values = [float(v) for v in getattr(config, "EVAL_T1_VALUES", [0.05, 0.08])]
+    t2_values = [float(v) for v in getattr(config, "EVAL_T2_VALUES", [0.05, 0.08])]
 
-    thickness = float(t_values[0]) + float(t_values[0])
-    x_nodes, y_nodes, z_nodes, u_fea = _run_fea(1.0, 10.0, t_values[0], t_values[0])
+    # Paper-facing two-layer metrics in this repository are typically reported
+    # on the "thin-stack" corner (t1=t1_min, t2=t2_min) with E1/E2 in {Emin,Emax}.
+    # Use the full thickness cross-product only when explicitly requested.
+    eval_mode = os.getenv("PINN_TWO_LAYER_EVAL_MODE", "thin").strip().lower()
+    if eval_mode in {"thin", "thin_stack", "tmin"}:
+        t1_values = [min(t1_values)] if t1_values else [0.05]
+        t2_values = [min(t2_values)] if t2_values else [0.05]
+
+    thickness = float(t1_values[0]) + float(t2_values[0])
+    x_nodes, y_nodes, z_nodes, u_fea = _run_fea(1.0, 10.0, t1_values[0], t2_values[0])
     x_nodes = np.array(x_nodes)
     y_nodes = np.array(y_nodes)
     z_nodes = np.array(z_nodes)
@@ -134,7 +147,7 @@ def main():
     x_grid, y_grid = np.meshgrid(x_nodes, y_nodes, indexing="ij")
     top_z = np.full(x_grid.size, thickness)
     u_pinn_top = _predict_pinn(
-        pinn, device, x_grid.ravel(), y_grid.ravel(), top_z, 1.0, 10.0, t_values[0], t_values[0]
+        pinn, device, x_grid.ravel(), y_grid.ravel(), top_z, 1.0, 10.0, t1_values[0], t2_values[0]
     ).reshape(len(x_nodes), len(y_nodes), 3)
 
     u_z_fea_top = u_fea[:, :, -1, 2]
@@ -169,8 +182,8 @@ def main():
 
     cases = []
     fea_cache = {}
-    for t1 in t_values:
-        for t2 in t_values:
+    for t1 in t1_values:
+        for t2 in t2_values:
             for e1 in e_values:
                 for e2 in e_values:
                     key = (e1, e2, t1, t2)
