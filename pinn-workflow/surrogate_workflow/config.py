@@ -64,8 +64,8 @@ Y_TRANSFORM = "log"  # "identity" | "log"
 Y_EPS = 1e-6
 
 # Loss mode: using log(y) + MSE tends to reduce relative worst-case error.
-LOSS_MODE = "mse"  # "mse" | "relative_mse"
-RELATIVE_LOSS_EPS = 1e-3
+LOSS_MODE = os.getenv("SURROGATE_LOSS_MODE", "mse")  # "mse" | "relative_mse"
+RELATIVE_LOSS_EPS = float(os.getenv("SURROGATE_RELATIVE_LOSS_EPS", "1e-3"))
 
 def mid_design() -> np.ndarray:
     return np.array([(DESIGN_RANGES[name][0] + DESIGN_RANGES[name][1]) * 0.5 for name in DESIGN_PARAMS], dtype=float)

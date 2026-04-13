@@ -58,6 +58,7 @@ def split_indices(n_samples: int, train_frac: float, val_frac: float, seed: int,
     perm = rng.permutation(remainder) if remainder.size else remainder
     n_train = int(n_samples * train_frac)
     n_val = int(n_samples * val_frac)
+    # Ensure non-empty splits when possible (helps small smoke runs).
     n_train = max(1, n_train)
     remaining = max(0, n_samples - n_train)
     if remaining >= 2:
@@ -159,4 +160,3 @@ def load_dataset(path: str) -> dict:
         "param_names": list(blob["param_names"]),
         "n_anchors": int(blob.get("n_anchors", 0)),
     }
-

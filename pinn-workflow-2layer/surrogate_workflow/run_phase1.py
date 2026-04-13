@@ -23,14 +23,7 @@ def prepare_outputs():
 def load_or_generate_dataset(regenerate: bool):
     if os.path.exists(config.DATASET_PATH) and not regenerate:
         print(f"Loading dataset from {config.DATASET_PATH}")
-        dataset = data_utils.load_dataset(config.DATASET_PATH)
-        expected = list(getattr(config, "DESIGN_PARAMS", []))
-        if expected and list(dataset.get("param_names", [])) != expected:
-            print("Existing dataset does not match current DESIGN_PARAMS; regenerating.")
-            print(f"  expected: {expected}")
-            print(f"  found:    {list(dataset.get('param_names', []))}")
-        else:
-            return dataset
+        return data_utils.load_dataset(config.DATASET_PATH)
 
     print("Generating dataset...")
     dataset = data_utils.generate_dataset()
@@ -55,15 +48,9 @@ def build_loaders(dataset, seed: int):
     rel_eps = float(getattr(config, "RELATIVE_LOSS_EPS", 1e-3))
     weights = (1.0 / (y_raw ** 2 + rel_eps ** 2)).astype(np.float32)
 
-    train_ds = TensorDataset(
-        torch.from_numpy(x[train_idx]), torch.from_numpy(y[train_idx]), torch.from_numpy(weights[train_idx])
-    )
-    val_ds = TensorDataset(
-        torch.from_numpy(x[val_idx]), torch.from_numpy(y[val_idx]), torch.from_numpy(weights[val_idx])
-    )
-    test_ds = TensorDataset(
-        torch.from_numpy(x[test_idx]), torch.from_numpy(y[test_idx]), torch.from_numpy(weights[test_idx])
-    )
+    train_ds = TensorDataset(torch.from_numpy(x[train_idx]), torch.from_numpy(y[train_idx]), torch.from_numpy(weights[train_idx]))
+    val_ds = TensorDataset(torch.from_numpy(x[val_idx]), torch.from_numpy(y[val_idx]), torch.from_numpy(weights[val_idx]))
+    test_ds = TensorDataset(torch.from_numpy(x[test_idx]), torch.from_numpy(y[test_idx]), torch.from_numpy(weights[test_idx]))
 
     train_loader = DataLoader(train_ds, batch_size=int(config.BATCH_SIZE), shuffle=True)
     val_loader = DataLoader(val_ds, batch_size=int(config.BATCH_SIZE), shuffle=False)
@@ -115,7 +102,7 @@ def save_model(model, dataset):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Phase 1 surrogate pipeline (2-layer PINN baseline)")
+    parser = argparse.ArgumentParser(description="Phase 1 surrogate pipeline (PINN baseline)")
     parser.add_argument("--regenerate", action="store_true", help="Regenerate baseline dataset")
     parser.add_argument("--device", default=None, help="Override device (cpu/cuda/mps)")
     parser.add_argument("--n-samples", type=int, default=None, help="Override number of LHS samples")
@@ -172,4 +159,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

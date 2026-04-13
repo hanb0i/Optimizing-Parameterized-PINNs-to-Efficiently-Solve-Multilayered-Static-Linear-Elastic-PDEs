@@ -4,6 +4,12 @@ import sys
 
 import numpy as np
 
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+os.environ.setdefault("MPLBACKEND", "Agg")
+os.environ.setdefault("MPLCONFIGDIR", os.path.join(_REPO_ROOT, ".mplconfig"))
+os.environ.setdefault("XDG_CACHE_HOME", os.path.join(_REPO_ROOT, ".cache"))
+os.environ.setdefault("PYTHONPYCACHEPREFIX", os.path.join(_REPO_ROOT, ".pycache"))
+
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt

@@ -4,7 +4,7 @@ import sys
 import numpy as np
 import torch
 
-# Add pinn-workflow-2layer to path to import model and pinn_config when run as a script.
+# Add pinn-workflow to path to import model and pinn_config when run as a script.
 SURROGATE_DIR = os.path.dirname(os.path.abspath(__file__))
 PINN_DIR = os.path.dirname(SURROGATE_DIR)
 if PINN_DIR not in sys.path:

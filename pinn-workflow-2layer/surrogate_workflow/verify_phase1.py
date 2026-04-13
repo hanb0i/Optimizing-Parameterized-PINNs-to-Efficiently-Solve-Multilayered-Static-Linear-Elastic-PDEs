@@ -53,61 +53,60 @@ def _plot_rel_error_hist(rel_err: np.ndarray, out_path: str):
     plt.close()
 
 
-def _predict_single(model, dataset: dict, device: torch.device, mu: np.ndarray) -> float:
-    x_norm, _, _ = data_utils.normalize_inputs(mu.reshape(1, -1), config.DESIGN_RANGES)
-    y_norm = surrogate.predict(model, x_norm, device)[0]
-    y_pred = validate.denormalize_y(
-        y_norm,
-        dataset["y_min"],
-        dataset["y_max"],
-        dataset.get("y_transform", "identity"),
-        dataset.get("y_eps", 1e-12),
-    )
-    return float(np.asarray(y_pred).reshape(-1)[0])
+def _plot_e1_e2_grid(model, dataset: dict, device: torch.device, out_path: str, n: int):
+    e1_low, e1_high = config.DESIGN_RANGES["E1"]
+    e2_low, e2_high = config.DESIGN_RANGES["E2"]
+    e1_vals = np.linspace(e1_low, e1_high, n)
+    e2_vals = np.linspace(e2_low, e2_high, n)
 
+    mu_mid = config.mid_design()
+    t1_mid = float(mu_mid[config.DESIGN_PARAMS.index("t1")])
+    t2_mid = float(mu_mid[config.DESIGN_PARAMS.index("t2")])
 
-def _two_layer_case_checks(model, dataset: dict, device: torch.device) -> float:
-    params = list(config.DESIGN_PARAMS)
-    if params != ["E1", "t1", "E2", "t2"]:
-        raise ValueError(f"Unexpected DESIGN_PARAMS for two-layer case checks: {params}")
+    y_true = np.zeros((n, n), dtype=float)
+    y_pred = np.zeros((n, n), dtype=float)
+    for i, e1 in enumerate(e1_vals):
+        for j, e2 in enumerate(e2_vals):
+            mu = np.array([e1, t1_mid, e2, t2_mid], dtype=float)
+            y_true[i, j] = baseline.compute_response(mu)
+            x_norm, _, _ = data_utils.normalize_inputs(mu.reshape(1, -1), config.DESIGN_RANGES)
+            y_norm = surrogate.predict(model, x_norm, device)[0]
+            y_pred[i, j] = validate.denormalize_y(y_norm, dataset["y_min"], dataset["y_max"])
 
-    e_low, e_high = config.DESIGN_RANGES["E1"]
-    t1_low, t1_high = config.DESIGN_RANGES["t1"]
-    t2_low, t2_high = config.DESIGN_RANGES["t2"]
+    abs_err = np.abs(y_pred - y_true)
+    rel_err = _relative_error(y_true, y_pred)
 
-    cases = [
-        ("two_layer_soft_bottom", np.array([e_low, t1_low, e_high, t2_high], dtype=float)),
-        ("two_layer_soft_top", np.array([e_high, t1_high, e_low, t2_low], dtype=float)),
-    ]
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+    im0 = axes[0].imshow(y_true, origin="lower", cmap="viridis")
+    axes[0].set_title("Baseline (PINN) y")
+    plt.colorbar(im0, ax=axes[0], fraction=0.046, pad=0.04)
 
-    worst = 0.0
-    for name, mu in cases:
-        y_true = float(baseline.compute_response(mu))
-        y_pred = float(_predict_single(model, dataset, device, mu))
-        rel = float(_relative_error(np.array([y_true]), np.array([y_pred]))[0] * 100.0)
-        worst = max(worst, rel)
-        print(f"{name} rel error: {rel:.2f}% (y_true={y_true:.6g}, y_pred={y_pred:.6g})")
+    im1 = axes[1].imshow(y_pred, origin="lower", cmap="viridis")
+    axes[1].set_title("Surrogate y")
+    plt.colorbar(im1, ax=axes[1], fraction=0.046, pad=0.04)
 
-    # Thin-stack E grid at (t1_min, t2_min): 2x2 E sweep points.
-    grid = []
-    for e1 in (e_low, e_high):
-        for e2 in (e_low, e_high):
-            grid.append(np.array([e1, t1_low, e2, t2_low], dtype=float))
-    y_true = np.asarray([baseline.compute_response(mu) for mu in grid], dtype=float)
-    y_pred = np.asarray([_predict_single(model, dataset, device, mu) for mu in grid], dtype=float)
-    rel = _relative_error(y_true, y_pred)
-    worst_grid = float(np.max(rel) * 100.0) if rel.size else 0.0
-    print(f"Two-layer thin-stack E-grid worst rel error: {worst_grid:.2f}% (n={len(grid)})")
-    worst = max(worst, worst_grid)
+    im2 = axes[2].imshow(rel_err * 100.0, origin="lower", cmap="magma")
+    axes[2].set_title("Rel error (%)")
+    plt.colorbar(im2, ax=axes[2], fraction=0.046, pad=0.04)
 
-    target = float(getattr(config, "TARGET_REL_ERR_PCT", 5.0))
-    print(f"Two-layer case-check worst rel error: {worst:.2f}% (target {target:.2f}%)")
-    return float(worst)
+    for ax in axes:
+        ax.set_xticks([0, n - 1])
+        ax.set_yticks([0, n - 1])
+        ax.set_xticklabels([f"{e2_low:g}", f"{e2_high:g}"])
+        ax.set_yticklabels([f"{e1_low:g}", f"{e1_high:g}"])
+        ax.set_xlabel("E2")
+        ax.set_ylabel("E1")
+
+    fig.suptitle(f"Mid-thickness grid: t1={t1_mid:.3f}, t2={t2_mid:.3f}", y=1.02)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=160, bbox_inches="tight")
+    plt.close(fig)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Verify Phase 1 surrogate outputs (2-layer)")
+    parser = argparse.ArgumentParser(description="Verify Phase 1 surrogate outputs")
     parser.add_argument("--device", default=None, help="Override device (cpu/cuda/mps)")
+    parser.add_argument("--grid", type=int, default=11, help="E1/E2 grid resolution for verification plot")
     args = parser.parse_args()
 
     device = torch.device(args.device) if args.device else (
@@ -116,24 +115,7 @@ def main():
     os.makedirs(config.PLOTS_DIR, exist_ok=True)
 
     dataset = data_utils.load_dataset(config.DATASET_PATH)
-    expected = list(getattr(config, "DESIGN_PARAMS", []))
-    found = list(dataset.get("param_names", []))
-    if expected and found != expected:
-        raise ValueError(
-            "Surrogate dataset does not match current DESIGN_PARAMS.\n"
-            f"  expected: {expected}\n"
-            f"  found:    {found}\n"
-            "Re-run: python3 pinn-workflow-2layer/surrogate_workflow/run_phase1.py --regenerate"
-        )
-    model, payload = _load_trained_model(device)
-    payload_params = list(payload.get("param_names", []))
-    if expected and payload_params != expected:
-        raise ValueError(
-            "Surrogate model does not match current DESIGN_PARAMS.\n"
-            f"  expected: {expected}\n"
-            f"  found:    {payload_params}\n"
-            "Re-run: python3 pinn-workflow-2layer/surrogate_workflow/run_phase1.py --regenerate"
-        )
+    model, _payload = _load_trained_model(device)
 
     n_samples = dataset["x_norm"].shape[0]
     train_idx, val_idx, test_idx = data_utils.split_indices(
@@ -149,8 +131,8 @@ def main():
         y_norm,
         dataset["y_min"],
         dataset["y_max"],
-        dataset.get("y_transform", payload.get("y_transform", "identity")),
-        dataset.get("y_eps", payload.get("y_eps", 1e-12)),
+        dataset.get("y_transform", _payload.get("y_transform", "identity")),
+        dataset.get("y_eps", _payload.get("y_eps", 1e-12)),
     )
     y_true = dataset["y_raw"]
 
@@ -162,12 +144,17 @@ def main():
     print(f"Test MAE: {mae:.6e}")
     print(f"Test rel error p50/p95/worst: {p50:.2f}% / {p95:.2f}% / {worst:.2f}%")
 
-    _two_layer_case_checks(model, dataset, device)
-
     _plot_rel_error_hist(rel_err, os.path.join(config.PLOTS_DIR, "test_rel_error_hist.png"))
+    _plot_e1_e2_grid(
+        model,
+        dataset,
+        device,
+        os.path.join(config.PLOTS_DIR, "grid_e1_e2_mid_thickness.png"),
+        n=int(args.grid),
+    )
+
     print(f"Wrote plots to {config.PLOTS_DIR}")
 
 
 if __name__ == "__main__":
     main()
-

@@ -108,24 +108,24 @@ class LayerNet(nn.Module):
         # Input: x, y, z_hat + 7 normalized params (E1, t1, E2, t2, r, mu, v0)
         # + 5 derived thickness/interface features.
         current_dim = 10 + 5
-
+        
         layers.append(nn.Linear(current_dim, hidden_units))
         layers.append(activation)
-
+        
         for _ in range(hidden_layers - 1):
             layers.append(nn.Linear(hidden_units, hidden_units))
             layers.append(activation)
-
+            
         layers.append(nn.Linear(hidden_units, 3))
         self.net = nn.Sequential(*layers)
         self._init_weights()
-
+        
     def _init_weights(self):
         for m in self.net.modules():
             if isinstance(m, nn.Linear):
                 nn.init.xavier_normal_(m.weight)
                 nn.init.constant_(m.bias, 0)
-
+                
     def forward(self, x):
         x_coord = x[:, 0:1]
         y_coord = x[:, 1:2]
@@ -137,7 +137,7 @@ class LayerNet(nn.Module):
         r_param = x[:, 7:8]
         mu_param = x[:, 8:9]
         v0_param = x[:, 9:10]
-
+        
         e_min, e_max = config.E_RANGE
         e_span = (e_max - e_min) if (e_max - e_min) != 0 else 1.0
         e1_norm = (e1_param - e_min) / e_span
@@ -174,31 +174,30 @@ class LayerNet(nn.Module):
         bend_min = (float(config.H) / max(float(t1_max + t2_max), 1e-6)) ** 3
         bend_span = max(bend_max - bend_min, 1e-6)
         bend_norm = (bend_scale - bend_min) / bend_span
-        extra_feats = torch.cat([sd_norm, torch.abs(sd_norm), soft, zeta**3, bend_norm], dim=1)
-
+        extra_feats = torch.cat([sd_norm, torch.abs(sd_norm), soft, zeta ** 3, bend_norm], dim=1)
+        
         x_scaled = torch.cat(
             [x_coord, y_coord, z_hat, e1_norm, t1_norm, e2_norm, t2_norm, r_norm, mu_norm, v0_norm, extra_feats],
-            dim=1,
+            dim=1
         )
         u_raw = self.net(x_scaled)
-
+        
         if config.USE_HARD_SIDE_BC:
             x_c = x[:, 0:1]
             y_c = x[:, 1:2]
             mask = x_c * (1.0 - x_c) * y_c * (1.0 - y_c) * 16.0
             u_raw = u_raw * mask
-
+        
         return u_raw
-
 
 class MultiLayerPINN(nn.Module):
     def __init__(self):
         super().__init__()
         self.layer = LayerNet(
-            hidden_layers=getattr(config, "LAYERS", 4),
-            hidden_units=getattr(config, "NEURONS", 64),
+            hidden_layers=getattr(config, 'LAYERS', 4),
+            hidden_units=getattr(config, 'NEURONS', 64),
         )
-
+        
     def forward(self, x, layer_idx=0):
         return self.layer(x)
 
@@ -207,4 +206,3 @@ class MultiLayerPINN(nn.Module):
 
     def set_hard_bc(self, use_hard):
         config.USE_HARD_SIDE_BC = bool(use_hard)
-

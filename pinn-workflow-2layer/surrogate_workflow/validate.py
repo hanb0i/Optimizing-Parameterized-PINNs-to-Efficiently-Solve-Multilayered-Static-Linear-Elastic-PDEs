@@ -112,7 +112,7 @@ def optimization_safety_check(model, dataset, device):
 
 def write_summary(path, param_names, metrics, safety_check):
     lines = [
-        "Phase 1 Surrogate Summary (2-layer)",
+        "Phase 1 Surrogate Summary",
         "",
         f"Design parameters: {', '.join(param_names)}",
         f"Train MSE: {metrics['train_mse']:.6e}",
@@ -128,4 +128,3 @@ def write_summary(path, param_names, metrics, safety_check):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
-

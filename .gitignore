@@ -2,6 +2,7 @@ uv.lock
 .DS_Store
 .mplcache/
 .mplconfig/
+.cache/
 .tmp/
 .pycache/
 __pycache__/
