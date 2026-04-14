@@ -1,25 +1,16 @@
 # Three-Layer PINN for Impact-Attenuation Design
 
-Physics-Informed Neural Network (PINN) for predicting displacement fields in three-layered structures under impact loading, with surrogate-based design optimization.
+Physics-Informed Neural Network (PINN) for predicting displacement fields in three-layered structures under impact loading.
 
 ## Overview
 
 This repository implements a complete pipeline for:
 1. **Physics Simulation**: PINN predicts 3D displacement fields for multi-layered materials
-2. **Surrogate Modeling**: Fast MLP approximates physics for design optimization
-3. **Design Optimization**: Gradient-based optimization finds optimal material configurations
-4. **Validation**: Comparison tools verify PINN accuracy against FEA
+2. **Validation**: Comparison tools verify PINN accuracy against FEA
 
 ## Repository Structure
 
 ```
-├── config.py              # Pipeline configuration classes
-├── dataset.py             # Dataset generation for surrogate training
-├── surrogate.py           # Surrogate model training
-├── optimize.py            # Design optimization
-├── metrics.py             # Performance metrics computation
-├── evaluate.py            # Validation and active learning
-├── run_pipeline.py        # End-to-end pipeline demo
 ├── compare_three_layer_pinn_fem.py  # 3-layer validation
 ├── compare_two_layer_pinn_fem.py    # 2-layer validation
 ├── pinn-workflow/         # PINN training code
@@ -32,7 +23,6 @@ This repository implements a complete pipeline for:
 │   └── solver/
 │       └── fem_solver.py  # Hex8 FEM implementation
 └── pinn-workflow-2layer/  # 2-layer PINN (legacy)
-    └── surrogate_workflow/ # 2-layer surrogate workflow
 ```
 
 ## Quick Start
@@ -72,12 +62,6 @@ python compare_two_layer_pinn_fem.py
 python3 graphs/make_all_graphs.py
 ```
 
-### Run Design Optimization Pipeline
-
-```bash
-python run_pipeline.py
-```
-
 ## PINN Architecture
 
 The PINN (`MultiLayerPINN`) predicts 3D displacement fields:
@@ -102,7 +86,7 @@ The network outputs `v` which is converted to displacement `u` via:
 u = scale * v / E^p * (H/t)^alpha
 ```
 
-where `p` (E_COMPLIANCE_POWER) and `alpha` (THICKNESS_COMPLIANCE_ALPHA) are configurable.
+where `p` (`E_COMPLIANCE_POWER`) and `alpha` (`THICKNESS_COMPLIANCE_ALPHA`) are configurable.
 
 ## Training
 
@@ -165,47 +149,6 @@ export PINN_OUT_DIR=/path/to/outputs
 3. **L-BFGS Fine-tuning**: Optional second-stage optimization
 4. **Checkpointing**: Model saved after each L-BFGS step
 
-## Surrogate Model & Design Optimization
-
-### Pipeline Overview
-
-```
-Physics Runner (PINN/FEA)
-    ↓
-Metrics Computation (strain energy, acceleration, displacement)
-    ↓
-Surrogate Training (MLP: params → metrics)
-    ↓
-Gradient-Based Optimization
-    ↓
-Optimal Design
-```
-
-### Metrics
-
-Three primary metrics for optimization:
-- **Strain Energy**: To be minimized (impact absorption)
-- **Peak Acceleration**: Constrained (protection requirement)
-- **Peak Displacement**: Constrained (space requirement)
-
-### Optimization Objective
-
-```
-minimize:   strain_energy
-subject to: acceleration ≤ a_cap
-            displacement ≤ u_cap
-```
-
-Implemented via softplus penalties on constraint violations.
-
-### Active Learning
-
-Iteratively improves surrogate by:
-1. Optimizing design candidates through current surrogate
-2. Evaluating true physics on candidates
-3. Adding points with large prediction errors to training set
-4. Retraining surrogate
-
 ## FEA Solver
 
 The FEA solver (`fem_solver.py`) implements:
@@ -242,7 +185,7 @@ With proper training:
 
 ## Configuration Reference
 
-### Geometry (pinn_config.py)
+### Geometry (`pinn_config.py`)
 
 ```python
 Lx = 1.0          # Plate length (x)
