@@ -1,0 +1,229 @@
+"""Shared helpers for three-layer PINN/FEM experiment scripts."""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterable
+
+import numpy as np
+import torch
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+PINN_DIR = REPO_ROOT / "pinn-workflow"
+if not PINN_DIR.exists():
+    PINN_DIR = REPO_ROOT / "three-layer-workflow"
+FEA_DIR = REPO_ROOT / "fea-workflow" / "solver"
+GRAPHS_DATA_DIR = REPO_ROOT / "graphs" / "data"
+GRAPHS_FIG_DIR = REPO_ROOT / "graphs" / "figures"
+
+for _path in (PINN_DIR, FEA_DIR):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
+
+import fem_solver  # noqa: E402
+import model  # noqa: E402
+import pinn_config as config  # noqa: E402
+
+
+@dataclass(frozen=True)
+class ThreeLayerCase:
+    case_id: str
+    e1: float
+    e2: float
+    e3: float
+    t1: float
+    t2: float
+    t3: float
+
+    @property
+    def e(self) -> tuple[float, float, float]:
+        return (self.e1, self.e2, self.e3)
+
+    @property
+    def t(self) -> tuple[float, float, float]:
+        return (self.t1, self.t2, self.t3)
+
+    @property
+    def thickness(self) -> float:
+        return float(self.t1 + self.t2 + self.t3)
+
+
+def ensure_output_dirs() -> None:
+    GRAPHS_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    GRAPHS_FIG_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def select_device() -> torch.device:
+    requested = os.getenv("PINN_DEVICE")
+    if requested:
+        return torch.device(requested)
+    if os.getenv("PINN_FORCE_CPU", "0") == "1":
+        return torch.device("cpu")
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
+def load_pinn(device: torch.device, model_path: str | os.PathLike | None = None):
+    model_path = Path(model_path or os.getenv("PINN_MODEL_PATH") or PINN_DIR / "pinn_model.pth")
+    pinn = model.MultiLayerPINN().to(device)
+    state = torch.load(str(model_path), map_location=device, weights_only=True)
+    state = model.adapt_legacy_state_dict(state, pinn.state_dict())
+    pinn.load_state_dict(state, strict=False)
+    pinn.eval()
+    return pinn, model_path
+
+
+def u_from_v(v: np.ndarray, pts: np.ndarray) -> np.ndarray:
+    e_scale = (pts[:, 3:4] + pts[:, 5:6] + pts[:, 7:8]) / 3.0
+    t_scale = pts[:, 4:5] + pts[:, 6:7] + pts[:, 8:9]
+    e_pow = float(getattr(config, "E_COMPLIANCE_POWER", 1.0))
+    alpha = float(getattr(config, "THICKNESS_COMPLIANCE_ALPHA", 0.0))
+    scale = float(getattr(config, "DISPLACEMENT_COMPLIANCE_SCALE", 1.0))
+    h_ref = float(getattr(config, "H", 1.0))
+    return scale * v / (e_scale**e_pow) * (h_ref / np.clip(t_scale, 1e-8, None)) ** alpha
+
+
+def make_points(x: np.ndarray, y: np.ndarray, z: np.ndarray, case: ThreeLayerCase) -> np.ndarray:
+    r_ref = float(getattr(config, "RESTITUTION_REF", 0.5))
+    mu_ref = float(getattr(config, "FRICTION_REF", 0.3))
+    v0_ref = float(getattr(config, "IMPACT_VELOCITY_REF", 1.0))
+    return np.stack(
+        [
+            x,
+            y,
+            z,
+            np.full_like(x, case.e1, dtype=float),
+            np.full_like(x, case.t1, dtype=float),
+            np.full_like(x, case.e2, dtype=float),
+            np.full_like(x, case.t2, dtype=float),
+            np.full_like(x, case.e3, dtype=float),
+            np.full_like(x, case.t3, dtype=float),
+            np.full_like(x, r_ref, dtype=float),
+            np.full_like(x, mu_ref, dtype=float),
+            np.full_like(x, v0_ref, dtype=float),
+        ],
+        axis=1,
+    )
+
+
+def predict_displacement(pinn, device: torch.device, pts: np.ndarray, batch_size: int = 32768) -> np.ndarray:
+    out = []
+    with torch.no_grad():
+        for start in range(0, len(pts), batch_size):
+            batch = torch.tensor(pts[start : start + batch_size], dtype=torch.float32, device=device)
+            v = pinn(batch).detach().cpu().numpy()
+            out.append(u_from_v(v, pts[start : start + batch_size]))
+    return np.concatenate(out, axis=0)
+
+
+def fem_cfg(case: ThreeLayerCase, ne_x: int, ne_y: int, ne_z: int) -> dict:
+    return {
+        "geometry": {"Lx": config.Lx, "Ly": config.Ly, "H": case.thickness, "ne_x": ne_x, "ne_y": ne_y, "ne_z": ne_z},
+        "material": {"E_layers": [case.e1, case.e2, case.e3], "t_layers": [case.t1, case.t2, case.t3], "nu": config.nu_vals[0]},
+        "load_patch": {
+            "pressure": config.p0,
+            "x_start": config.LOAD_PATCH_X[0] / config.Lx,
+            "x_end": config.LOAD_PATCH_X[1] / config.Lx,
+            "y_start": config.LOAD_PATCH_Y[0] / config.Ly,
+            "y_end": config.LOAD_PATCH_Y[1] / config.Ly,
+        },
+    }
+
+
+def solve_fem_case(case: ThreeLayerCase, ne_x: int, ne_y: int, ne_z: int):
+    start = time.perf_counter()
+    x_nodes, y_nodes, z_nodes, u_grid = fem_solver.solve_three_layer_fem(fem_cfg(case, ne_x, ne_y, ne_z))
+    elapsed = time.perf_counter() - start
+    return np.asarray(x_nodes), np.asarray(y_nodes), np.asarray(z_nodes), np.asarray(u_grid), elapsed
+
+
+def mae_pct(pred: np.ndarray, ref: np.ndarray) -> float:
+    denom = float(np.max(np.abs(ref)))
+    return 100.0 * float(np.mean(np.abs(pred - ref))) / denom if denom > 0 else 0.0
+
+
+def max_pct(pred: np.ndarray, ref: np.ndarray) -> float:
+    denom = float(np.max(np.abs(ref)))
+    return 100.0 * float(np.max(np.abs(pred - ref))) / denom if denom > 0 else 0.0
+
+
+def evaluate_case_grid(pinn, device: torch.device, case: ThreeLayerCase, ne_x: int, ne_y: int, ne_z: int) -> dict:
+    x_nodes, y_nodes, z_nodes, u_fem, fem_seconds = solve_fem_case(case, ne_x, ne_y, ne_z)
+    xg, yg, zg = np.meshgrid(x_nodes, y_nodes, z_nodes, indexing="ij")
+    pts = make_points(xg.ravel(), yg.ravel(), zg.ravel(), case)
+    pred_start = time.perf_counter()
+    u_pred = predict_displacement(pinn, device, pts).reshape(u_fem.shape)
+    pinn_eval_seconds = time.perf_counter() - pred_start
+    top_pred = u_pred[:, :, -1, 2]
+    top_ref = u_fem[:, :, -1, 2]
+    return {
+        "case": case,
+        "x_nodes": x_nodes,
+        "y_nodes": y_nodes,
+        "z_nodes": z_nodes,
+        "u_fem": u_fem,
+        "u_pinn": u_pred,
+        "fem_seconds": fem_seconds,
+        "pinn_eval_seconds": pinn_eval_seconds,
+        "volume_mae_pct": mae_pct(u_pred, u_fem),
+        "volume_max_pct": max_pct(u_pred, u_fem),
+        "top_uz_mae_pct": mae_pct(top_pred, top_ref),
+        "top_uz_max_pct": max_pct(top_pred, top_ref),
+        "peak_fem_uz": float(np.min(top_ref)),
+        "peak_pinn_uz": float(np.min(top_pred)),
+        "n_eval_points": int(u_fem.shape[0] * u_fem.shape[1] * u_fem.shape[2]),
+    }
+
+
+def random_interior_cases(n_cases: int, seed: int) -> list[ThreeLayerCase]:
+    rng = np.random.default_rng(seed)
+    e_min, e_max = [float(v) for v in getattr(config, "E_RANGE", [1.0, 10.0])]
+    t1_min, t1_max = [float(v) for v in getattr(config, "T1_RANGE", [0.02, 0.10])]
+    t2_min, t2_max = [float(v) for v in getattr(config, "T2_RANGE", [0.02, 0.10])]
+    t3_min, t3_max = [float(v) for v in getattr(config, "T3_RANGE", [0.02, 0.10])]
+    cases: list[ThreeLayerCase] = []
+    for idx in range(n_cases):
+        vals = rng.uniform([e_min, e_min, e_min, t1_min, t2_min, t3_min], [e_max, e_max, e_max, t1_max, t2_max, t3_max])
+        cases.append(ThreeLayerCase(f"random_interior_{idx:03d}", *[float(v) for v in vals]))
+    return cases
+
+
+def write_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2))
+
+
+def supervised_parameter_grid() -> set[tuple[float, float, float, float, float, float]]:
+    out = set()
+    for t1 in getattr(config, "DATA_T1_VALUES", []):
+        for t2 in getattr(config, "DATA_T2_VALUES", []):
+            for t3 in getattr(config, "DATA_T3_VALUES", []):
+                for e1 in getattr(config, "DATA_E_VALUES", []):
+                    for e2 in getattr(config, "DATA_E_VALUES", []):
+                        for e3 in getattr(config, "DATA_E_VALUES", []):
+                            out.add(tuple(round(float(v), 10) for v in (e1, e2, e3, t1, t2, t3)))
+    return out
+
+
+def is_supervised_parameter_case(case: ThreeLayerCase) -> bool:
+    key = tuple(round(float(v), 10) for v in (case.e1, case.e2, case.e3, case.t1, case.t2, case.t3))
+    return key in supervised_parameter_grid()
+
+
+def rows_to_csv(path: Path, fieldnames: Iterable[str], rows: list[dict]) -> None:
+    import csv
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(fieldnames))
+        writer.writeheader()
+        writer.writerows(rows)

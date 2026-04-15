@@ -50,6 +50,10 @@ def main() -> None:
     _run_script("plot_geometry_bc.py")
     _run_script("plot_ablation_table.py")
     _run_script("plot_error_heatmap.py")
+    _run_script("plot_generalization_summary.py")
+    _run_script("plot_unsupervised_region_summary.py")
+    _run_script("plot_efficiency_timing.py")
+    _run_script("plot_one_layer_summaries.py")
     print("\nDone. Figures are in `graphs/figures/`.")
 
 

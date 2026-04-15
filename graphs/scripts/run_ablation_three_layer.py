@@ -66,6 +66,7 @@ def main() -> None:
         "PINN_REGEN_SUPERVISION": "0",
     }
     if args.epochs_soap is not None:
+        base_env["PINN_EPOCHS_ADAM"] = str(args.epochs_soap)
         base_env["PINN_EPOCHS_SOAP"] = str(args.epochs_soap)
     if args.device:
         base_env["PINN_DEVICE"] = str(args.device)

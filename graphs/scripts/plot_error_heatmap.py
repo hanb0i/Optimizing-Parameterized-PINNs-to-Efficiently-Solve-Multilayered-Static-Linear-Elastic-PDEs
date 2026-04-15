@@ -23,6 +23,8 @@ class Case:
 
 def _import_pinn_stack():
     pinn_dir = REPO_ROOT / "pinn-workflow"
+    if not pinn_dir.exists():
+        pinn_dir = REPO_ROOT / "three-layer-workflow"
     fea_dir = REPO_ROOT / "fea-workflow" / "solver"
     for p in (pinn_dir, fea_dir):
         if str(p) not in sys.path:
@@ -89,7 +91,10 @@ def main() -> None:
     if len(case.e) != 3 or len(case.t) != 3:
         raise ValueError("Expected PINN_ERROR_E and PINN_ERROR_T to have 3 comma-separated values each.")
 
-    model_path = os.getenv("PINN_MODEL_PATH") or str(REPO_ROOT / "pinn-workflow" / "pinn_model.pth")
+    default_pinn_dir = REPO_ROOT / "pinn-workflow"
+    if not default_pinn_dir.exists():
+        default_pinn_dir = REPO_ROOT / "three-layer-workflow"
+    model_path = os.getenv("PINN_MODEL_PATH") or str(default_pinn_dir / "pinn_model.pth")
     model_path_p = Path(model_path)
 
     fig, ax = plt.subplots(figsize=(3.6, 3.2))
