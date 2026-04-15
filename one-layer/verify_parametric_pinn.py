@@ -1,0 +1,260 @@
+import os
+import sys
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.dirname(BASE_DIR)
+
+os.environ.setdefault("PYTHONPYCACHEPREFIX", os.path.join(REPO_ROOT, ".pycache"))
+os.environ.setdefault("MPLCONFIGDIR", os.path.join(REPO_ROOT, ".mplconfig"))
+os.makedirs(os.environ["PYTHONPYCACHEPREFIX"], exist_ok=True)
+os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
+
+import numpy as np
+import torch
+
+from scipy.interpolate import RegularGridInterpolator
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
+FEA_SOLVER_DIR = os.path.join(REPO_ROOT, "fea-workflow", "solver")
+
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
+if FEA_SOLVER_DIR not in sys.path:
+    sys.path.insert(0, FEA_SOLVER_DIR)
+
+import pinn_config as config
+import model
+import fem_solver
+
+
+def _load_model(model_path, device):
+    pinn = model.MultiLayerPINN().to(device)
+    if os.path.exists(model_path):
+        sd = torch.load(model_path, map_location=device, weights_only=True)
+        target_sd = pinn.state_dict()
+        w_key = "layer.net.0.weight"
+        if w_key in sd and w_key in target_sd:
+            src_w = sd[w_key]
+            tgt_w = target_sd[w_key]
+            if src_w.shape != tgt_w.shape and src_w.shape[0] == tgt_w.shape[0]:
+                if src_w.shape[1] == 8 and tgt_w.shape[1] == 11:
+                    adapted = torch.zeros_like(tgt_w)
+                    adapted[:, 0:5] = src_w[:, 0:5]
+                    adapted[:, 8:11] = src_w[:, 5:8]
+                    sd[w_key] = adapted
+                elif src_w.shape[1] == 10 and tgt_w.shape[1] == 11:
+                    adapted = torch.zeros_like(tgt_w)
+                    adapted[:, 0:7] = src_w[:, 0:7]
+                    adapted[:, 8:11] = src_w[:, 7:10]
+                    sd[w_key] = adapted
+        pinn.load_state_dict(sd, strict=False)
+        print(f"Model loaded from {model_path}")
+    else:
+        print(f"Warning: {model_path} not found.")
+    pinn.eval()
+    return pinn
+
+
+def _u_from_v(v, E_val, thickness):
+    alpha = float(getattr(config, "THICKNESS_COMPLIANCE_ALPHA", 0.0))
+    t_scale = 1.0 if alpha == 0.0 else (float(config.H) / max(1e-8, float(thickness))) ** alpha
+    e_pow = float(getattr(config, "E_COMPLIANCE_POWER", 1.0))
+    return (v / (float(E_val) ** e_pow)) * t_scale
+
+
+def _ref_params():
+    return (
+        float(getattr(config, "RESTITUTION_REF", 0.5)),
+        float(getattr(config, "FRICTION_REF", 0.3)),
+        float(getattr(config, "IMPACT_VELOCITY_REF", 1.0)),
+    )
+
+
+def run_fea(E_val, thickness):
+    cfg = {
+        'geometry': {'Lx': config.Lx, 'Ly': config.Ly, 'H': thickness},
+        'material': {'E': E_val, 'nu': config.nu_vals[0]},
+        'load_patch': {
+            'pressure': config.p0,
+            'x_start': config.LOAD_PATCH_X[0] / config.Lx,
+            'x_end': config.LOAD_PATCH_X[1] / config.Lx,
+            'y_start': config.LOAD_PATCH_Y[0] / config.Ly,
+            'y_end': config.LOAD_PATCH_Y[1] / config.Ly,
+        }
+    }
+    return fem_solver.solve_fem(cfg)
+
+
+def _pinn_predict_top(pinn, device, X_flat, Y_flat, thickness, E_val):
+    r_ref, mu_ref, v0_ref = _ref_params()
+    Z_flat = np.ones_like(X_flat) * thickness
+    T_flat = np.ones_like(X_flat) * thickness
+    E_flat = np.ones_like(X_flat) * E_val
+    R_flat = np.ones_like(X_flat) * r_ref
+    MU_flat = np.ones_like(X_flat) * mu_ref
+    V0_flat = np.ones_like(X_flat) * v0_ref
+    pts = np.stack([X_flat, Y_flat, Z_flat, E_flat, T_flat, R_flat, MU_flat, V0_flat], axis=1)
+    with torch.no_grad():
+        v = pinn(torch.tensor(pts, dtype=torch.float32).to(device)).cpu().numpy()
+    return _u_from_v(v, E_val, thickness)
+
+
+def verify_parametric(pinn, device, viz_dir):
+    os.makedirs(viz_dir, exist_ok=True)
+
+    t_targets = [0.05, 0.1, 0.15]
+    E_targets = [1.0, 5.0, 10.0]
+    if os.getenv("PINN_VERIFY_THICKNESS_VALUES"):
+        t_targets = [float(x.strip()) for x in os.environ["PINN_VERIFY_THICKNESS_VALUES"].split(",") if x.strip()]
+    if os.getenv("PINN_VERIFY_E_VALUES"):
+        E_targets = [float(x.strip()) for x in os.environ["PINN_VERIFY_E_VALUES"].split(",") if x.strip()]
+
+    nx = int(os.getenv("PINN_VERIFY_NX", "101"))
+    ny = int(os.getenv("PINN_VERIFY_NY", "101"))
+    x_range = np.linspace(0, config.Lx, nx)
+    y_range = np.linspace(0, config.Ly, ny)
+    X, Y = np.meshgrid(x_range, y_range)
+    X_flat = X.flatten()
+    Y_flat = Y.flatten()
+
+    fea_cache = {}  # {t_val: (x_n, y_n, z_n, u_arr)}
+    for t_val in t_targets:
+        x_n, y_n, z_n, u_fea = run_fea(1.0, t_val)
+        fea_cache[t_val] = (np.array(x_n), np.array(y_n), np.array(z_n), np.array(u_fea, dtype=float))
+
+    print("\n=== Parametric Verification ===")
+
+    for t_val in t_targets:
+        x_n, y_n, z_n, u_fea_ref = fea_cache[t_val]
+        print(f"\n--- Thickness t={t_val} ---")
+
+        fig_grid, axes_grid = plt.subplots(3, 3, figsize=(18, 15))
+
+        for e_idx, E_val in enumerate(E_targets):
+            # FEA: scale from E=1 reference
+            scale = 1.0 / float(E_val)
+            u_z_fea_top = (u_fea_ref * scale)[:, :, -1, 2].T  # (ny, nx)
+
+            # PINN prediction
+            u_pinn = _pinn_predict_top(pinn, device, X_flat, Y_flat, t_val, E_val)
+            UZ_pinn = u_pinn[:, 2].reshape(ny, nx)
+
+            peak_fea = float(np.min(u_z_fea_top))
+            peak_pinn = float(np.min(UZ_pinn))
+            rel_err = abs((peak_pinn - peak_fea) / peak_fea) if peak_fea != 0 else float('nan')
+            print(f"  E={E_val}: FEA peak={peak_fea:.6f}, PINN peak={peak_pinn:.6f}, rel_err={rel_err:.3f}")
+
+            # Interpolate FEA onto same grid for comparison
+            u_fea_top_2d = (u_fea_ref * scale)[:, :, -1, 2]  # (nx_fea, ny_fea)
+            interp = RegularGridInterpolator((x_n, y_n), u_fea_top_2d, method='linear', bounds_error=False, fill_value=None)
+            UZ_fea_interp = interp(np.stack([X_flat, Y_flat], axis=1)).reshape(ny, nx)
+
+            # --- 3x3 Grid: FEA / PINN / Error ---
+            vmin = min(float(np.nanmin(UZ_fea_interp)), float(np.min(UZ_pinn)))
+            vmax = max(float(np.nanmax(UZ_fea_interp)), float(np.max(UZ_pinn)))
+
+            im0 = axes_grid[0, e_idx].contourf(X, Y, UZ_fea_interp, 50, cmap='jet', vmin=vmin, vmax=vmax)
+            plt.colorbar(im0, ax=axes_grid[0, e_idx])
+            axes_grid[0, e_idx].set_title(f"FEA (E={E_val})\nPeak: {peak_fea:.4f}")
+
+            im1 = axes_grid[1, e_idx].contourf(X, Y, UZ_pinn, 50, cmap='jet', vmin=vmin, vmax=vmax)
+            plt.colorbar(im1, ax=axes_grid[1, e_idx])
+            axes_grid[1, e_idx].set_title(f"PINN (E={E_val})\nPeak: {peak_pinn:.4f}")
+
+            error = np.abs(UZ_pinn - UZ_fea_interp)
+            im2 = axes_grid[2, e_idx].contourf(X, Y, error, 50, cmap='magma')
+            plt.colorbar(im2, ax=axes_grid[2, e_idx])
+            axes_grid[2, e_idx].set_title(f"Abs Error\nMAE: {np.nanmean(error):.5f}")
+
+            # --- 3D Surface Comparison ---
+            fig_3d = plt.figure(figsize=(16, 8))
+            ax1 = fig_3d.add_subplot(121, projection='3d')
+            ax2 = fig_3d.add_subplot(122, projection='3d')
+            v_min_3d = min(float(np.min(UZ_pinn)), float(np.nanmin(UZ_fea_interp)))
+            v_max_3d = max(float(np.max(UZ_pinn)), float(np.nanmax(UZ_fea_interp)))
+
+            surf1 = ax1.plot_surface(X, Y, UZ_pinn, cmap='jet', edgecolor='none', vmin=v_min_3d, vmax=v_max_3d)
+            ax1.set_title(f"PINN Uz (E={E_val}, t={t_val})")
+            ax1.set_zlim(v_min_3d, v_max_3d)
+            fig_3d.colorbar(surf1, ax=ax1, shrink=0.5, aspect=5)
+
+            surf2 = ax2.plot_surface(X, Y, UZ_fea_interp, cmap='jet', edgecolor='none', vmin=v_min_3d, vmax=v_max_3d)
+            ax2.set_title(f"FEA Uz (E={E_val}, t={t_val})")
+            ax2.set_zlim(v_min_3d, v_max_3d)
+            fig_3d.colorbar(surf2, ax=ax2, shrink=0.5, aspect=5)
+
+            fig_3d.tight_layout()
+            fig_3d.savefig(os.path.join(viz_dir, f"3d_view_E{E_val:.1f}_t{t_val:.2f}.png"))
+            plt.close(fig_3d)
+
+            # --- Cross-Section at y=0.5 ---
+            nz_c = 51
+            z_c = np.linspace(0, t_val, nz_c)
+            X_c, Z_c = np.meshgrid(x_range, z_c)
+            r_ref, mu_ref, v0_ref = _ref_params()
+
+            x_in = X_c.flatten()
+            y_in = np.ones_like(x_in) * 0.5
+            z_in = Z_c.flatten()
+            E_in = np.ones_like(x_in) * E_val
+            T_in = np.ones_like(x_in) * t_val
+            R_in = np.ones_like(x_in) * r_ref
+            MU_in = np.ones_like(x_in) * mu_ref
+            V0_in = np.ones_like(x_in) * v0_ref
+            pts_c = np.stack([x_in, y_in, z_in, E_in, T_in, R_in, MU_in, V0_in], axis=1)
+
+            with torch.no_grad():
+                v_c = pinn(torch.tensor(pts_c, dtype=torch.float32).to(device)).cpu().numpy()
+            u_c = _u_from_v(v_c, E_val, t_val)
+            UZ_pinn_c = u_c[:, 2].reshape(nz_c, nx)
+
+            # FEA cross-section: interpolate from 3D FEA data
+            u_fea_3d = u_fea_ref * scale  # (nx_fea, ny_fea, nz_fea, 3)
+            y_idx = np.argmin(np.abs(y_n - 0.5))
+            uz_fea_xz = u_fea_3d[:, y_idx, :, 2]  # (nx_fea, nz_fea)
+            interp_xz = RegularGridInterpolator((x_n, z_n), uz_fea_xz, method='linear', bounds_error=False, fill_value=None)
+            UZ_fea_c = interp_xz(np.stack([X_c.flatten(), Z_c.flatten()], axis=1)).reshape(nz_c, nx)
+
+            fig_cs, axes_cs = plt.subplots(1, 3, figsize=(18, 5))
+            v_min_c = min(float(np.min(UZ_pinn_c)), float(np.nanmin(UZ_fea_c)))
+            v_max_c = max(float(np.max(UZ_pinn_c)), float(np.nanmax(UZ_fea_c)))
+
+            im_fea_c = axes_cs[0].contourf(X_c, Z_c, UZ_fea_c, 50, cmap='jet', vmin=v_min_c, vmax=v_max_c)
+            plt.colorbar(im_fea_c, ax=axes_cs[0])
+            axes_cs[0].set_title(f"FEA Cross-Section\nPeak: {np.nanmin(UZ_fea_c):.4f}")
+
+            im_pinn_c = axes_cs[1].contourf(X_c, Z_c, UZ_pinn_c, 50, cmap='jet', vmin=v_min_c, vmax=v_max_c)
+            plt.colorbar(im_pinn_c, ax=axes_cs[1])
+            axes_cs[1].set_title(f"PINN Cross-Section\nPeak: {UZ_pinn_c.min():.4f}")
+
+            err_c = np.abs(UZ_pinn_c - UZ_fea_c)
+            im_err_c = axes_cs[2].contourf(X_c, Z_c, err_c, 50, cmap='magma')
+            plt.colorbar(im_err_c, ax=axes_cs[2])
+            axes_cs[2].set_title(f"Abs Error\nMAE: {np.nanmean(err_c):.5f}")
+
+            for ax in axes_cs:
+                ax.set_xlabel('x')
+                ax.set_ylabel('z')
+
+            fig_cs.tight_layout()
+            fig_cs.savefig(os.path.join(viz_dir, f"cross_section_E{E_val:.1f}_t{t_val:.2f}.png"))
+            plt.close(fig_cs)
+
+        fig_grid.suptitle(f"Top-Surface Uz Comparison | t={t_val}", fontsize=16)
+        fig_grid.tight_layout()
+        fig_grid.savefig(os.path.join(viz_dir, f"top_view_t{t_val:.2f}.png"))
+        plt.close(fig_grid)
+
+    print("\nVerification Complete.")
+
+
+if __name__ == "__main__":
+    device = torch.device('cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu')
+    model_path = os.path.join(BASE_DIR, "pinn_model.pth")
+    viz_dir = os.path.join(BASE_DIR, "visualization")
+
+    pinn = _load_model(model_path, device)
+    verify_parametric(pinn, device, viz_dir)
