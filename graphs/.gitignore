@@ -9,3 +9,47 @@ data/*
 !data/.gitkeep
 !figures/.gitkeep
 
+# Paper-support figures selected for commit
+!figures/fig_ablation_table.png
+!figures/fig_ablation_table.pdf
+!figures/fig_efficiency_timing.png
+!figures/fig_efficiency_timing.pdf
+!figures/fig_error_heatmap.png
+!figures/fig_error_heatmap.pdf
+!figures/fig_geometry_bc.png
+!figures/fig_geometry_bc.pdf
+!figures/fig_random_interior_generalization.png
+!figures/fig_random_interior_generalization.pdf
+!figures/fig_unsupervised_region_summary.png
+!figures/fig_unsupervised_region_summary.pdf
+!figures/fig_one_layer_ablation.png
+!figures/fig_one_layer_ablation.pdf
+!figures/fig_one_layer_efficiency.png
+!figures/fig_one_layer_efficiency.pdf
+!figures/fig_one_layer_generalization.png
+!figures/fig_one_layer_generalization.pdf
+!figures/fig_one_layer_unsupervised.png
+!figures/fig_one_layer_unsupervised.pdf
+!figures/unsupervised_region_random_interior_000.png
+!figures/unsupervised_region_supervised_param_extreme.png
+!figures/one_layer_unsupervised_region_one_layer_random_000.png
+!figures/one_layer_unsupervised_region_one_layer_supervised_param_mid.png
+
+# Paper-support data selected for commit
+!data/ablation_results.csv
+!data/compliance_calibration.json
+!data/efficiency_timing.csv
+!data/efficiency_timing_summary.json
+!data/random_interior_generalization.csv
+!data/random_interior_generalization_summary.json
+!data/three_layer_compliance_calibration.json
+!data/unsupervised_region_comparison.csv
+!data/unsupervised_region_summary.json
+!data/one_layer_ablation_results.csv
+!data/one_layer_compliance_calibration.json
+!data/one_layer_efficiency_timing.csv
+!data/one_layer_efficiency_timing_summary.json
+!data/one_layer_random_generalization.csv
+!data/one_layer_random_generalization_summary.json
+!data/one_layer_unsupervised_region_comparison.csv
+!data/one_layer_unsupervised_region_summary.json

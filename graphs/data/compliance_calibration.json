@@ -1,0 +1,51 @@
+{
+  "model_path": "graphs/data/ablation_runs/full_framework/pinn_model.pth",
+  "mesh": {
+    "ne_x": 8,
+    "ne_y": 8,
+    "ne_z": 4
+  },
+  "initial_params": {
+    "PINN_DISPLACEMENT_COMPLIANCE_SCALE": 1.0,
+    "PINN_E_COMPLIANCE_POWER": 0.95,
+    "PINN_THICKNESS_COMPLIANCE_ALPHA": 3.0
+  },
+  "tuned_params": {
+    "PINN_DISPLACEMENT_COMPLIANCE_SCALE": 2.444297829491136,
+    "PINN_E_COMPLIANCE_POWER": 1.0619695233649806,
+    "PINN_THICKNESS_COMPLIANCE_ALPHA": 2.443802487054275
+  },
+  "calibration_metrics_initial": {
+    "top_mae_pct_mean": 10.080874106448798,
+    "top_mae_pct_worst": 14.657399625078284,
+    "volume_mae_pct_mean": 4.648586125687584,
+    "volume_mae_pct_worst": 6.522589860842963,
+    "top_max_pct_worst": 88.07382193091834,
+    "all_top_cases_below_5_pct": false
+  },
+  "calibration_metrics_tuned": {
+    "top_mae_pct_mean": 8.816833290177586,
+    "top_mae_pct_worst": 9.641049405882052,
+    "volume_mae_pct_mean": 4.135715752469718,
+    "volume_mae_pct_worst": 4.843786278149653,
+    "top_max_pct_worst": 71.73127462547615,
+    "all_top_cases_below_5_pct": false
+  },
+  "holdout_metrics_initial": {
+    "top_mae_pct_mean": 8.32805223959302,
+    "top_mae_pct_worst": 9.132263537106132,
+    "volume_mae_pct_mean": 4.326512435524128,
+    "volume_mae_pct_worst": 4.916092562868467,
+    "top_max_pct_worst": 79.99820219829927,
+    "all_top_cases_below_5_pct": false
+  },
+  "holdout_metrics_tuned": {
+    "top_mae_pct_mean": 10.17896387668754,
+    "top_mae_pct_worst": 13.954065262398915,
+    "volume_mae_pct_mean": 4.771160173933314,
+    "volume_mae_pct_worst": 5.938367828668674,
+    "top_max_pct_worst": 32.74929673283553,
+    "all_top_cases_below_5_pct": false
+  },
+  "note": "Use the tuned PINN_* env vars for evaluation only after reporting this calibration protocol."
+}

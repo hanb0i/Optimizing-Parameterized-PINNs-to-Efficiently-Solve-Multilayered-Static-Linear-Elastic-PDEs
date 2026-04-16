@@ -1,0 +1,75 @@
+{
+  "model_path": "one-layer-workflow/pinn_model.pth",
+  "mesh": {
+    "ne_x": 10,
+    "ne_y": 10,
+    "ne_z": 6
+  },
+  "notes": [
+    "The default one-layer checkpoint is pure-physics, so no locations were directly supervised by FEM during its training.",
+    "Parameter-region labels indicate whether a case lies on the optional sparse-supervision grid.",
+    "There is no material interface in the one-layer model; interface-continuity ablation is not applicable."
+  ],
+  "rows": [
+    {
+      "case_id": "one_layer_supervised_param_mid",
+      "parameter_region": "supervised_parameter_grid",
+      "spatial_region": "bottom_surface",
+      "E": "5",
+      "thickness": "0.1",
+      "mae_pct": "2.475294",
+      "max_pct": "19.344543",
+      "n_points": "121"
+    },
+    {
+      "case_id": "one_layer_supervised_param_mid",
+      "parameter_region": "supervised_parameter_grid",
+      "spatial_region": "interior_volume",
+      "E": "5",
+      "thickness": "0.1",
+      "mae_pct": "1.548416",
+      "max_pct": "19.728274",
+      "n_points": "605"
+    },
+    {
+      "case_id": "one_layer_supervised_param_mid",
+      "parameter_region": "supervised_parameter_grid",
+      "spatial_region": "top_surface",
+      "E": "5",
+      "thickness": "0.1",
+      "mae_pct": "2.263058",
+      "max_pct": "19.426543",
+      "n_points": "121"
+    },
+    {
+      "case_id": "one_layer_random_000",
+      "parameter_region": "unsupervised_random_parameter",
+      "spatial_region": "bottom_surface",
+      "E": "7.4620459",
+      "thickness": "0.099660631",
+      "mae_pct": "2.369974",
+      "max_pct": "18.227922",
+      "n_points": "121"
+    },
+    {
+      "case_id": "one_layer_random_000",
+      "parameter_region": "unsupervised_random_parameter",
+      "spatial_region": "interior_volume",
+      "E": "7.4620459",
+      "thickness": "0.099660631",
+      "mae_pct": "1.456727",
+      "max_pct": "18.622514",
+      "n_points": "605"
+    },
+    {
+      "case_id": "one_layer_random_000",
+      "parameter_region": "unsupervised_random_parameter",
+      "spatial_region": "top_surface",
+      "E": "7.4620459",
+      "thickness": "0.099660631",
+      "mae_pct": "2.150746",
+      "max_pct": "18.317493",
+      "n_points": "121"
+    }
+  ]
+}

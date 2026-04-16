@@ -1,0 +1,127 @@
+{
+  "model_path": "graphs/data/ablation_runs/full_framework/pinn_model.pth",
+  "mesh": {
+    "ne_x": 10,
+    "ne_y": 10,
+    "ne_z": 6
+  },
+  "notes": [
+    "Parameter regions are labeled by whether the case lies on DATA_E_VALUES x DATA_T*_VALUES.",
+    "Sparse supervision focus labels mark top-surface and interface planes emphasized by the supervision sampler.",
+    "Interior and bottom labels are not directly targeted by sparse FEM supervision."
+  ],
+  "rows": [
+    {
+      "case_id": "supervised_param_extreme",
+      "parameter_region": "supervised_parameter_grid",
+      "spatial_region": "bottom_unsupervised_spatial",
+      "e1": "1",
+      "e2": "10",
+      "e3": "10",
+      "t1": "0.1",
+      "t2": "0.02",
+      "t3": "0.02",
+      "mae_pct": "8.705967",
+      "max_pct": "66.642689",
+      "n_points": "121"
+    },
+    {
+      "case_id": "supervised_param_extreme",
+      "parameter_region": "supervised_parameter_grid",
+      "spatial_region": "interior_unsupervised_spatial",
+      "e1": "1",
+      "e2": "10",
+      "e3": "10",
+      "t1": "0.1",
+      "t2": "0.02",
+      "t3": "0.02",
+      "mae_pct": "6.028020",
+      "max_pct": "62.636146",
+      "n_points": "363"
+    },
+    {
+      "case_id": "supervised_param_extreme",
+      "parameter_region": "supervised_parameter_grid",
+      "spatial_region": "interface_sparse_focus",
+      "e1": "1",
+      "e2": "10",
+      "e3": "10",
+      "t1": "0.1",
+      "t2": "0.02",
+      "t3": "0.02",
+      "mae_pct": "3.883080",
+      "max_pct": "58.545797",
+      "n_points": "242"
+    },
+    {
+      "case_id": "supervised_param_extreme",
+      "parameter_region": "supervised_parameter_grid",
+      "spatial_region": "top_surface_sparse_focus",
+      "e1": "1",
+      "e2": "10",
+      "e3": "10",
+      "t1": "0.1",
+      "t2": "0.02",
+      "t3": "0.02",
+      "mae_pct": "4.401969",
+      "max_pct": "49.937588",
+      "n_points": "121"
+    },
+    {
+      "case_id": "random_interior_000",
+      "parameter_region": "unsupervised_random_parameter",
+      "spatial_region": "bottom_unsupervised_spatial",
+      "e1": "7.4620459",
+      "e2": "5.4694568",
+      "e3": "9.2977577",
+      "t1": "0.054781324",
+      "t2": "0.031180696",
+      "t3": "0.028459079",
+      "mae_pct": "5.298539",
+      "max_pct": "42.900304",
+      "n_points": "121"
+    },
+    {
+      "case_id": "random_interior_000",
+      "parameter_region": "unsupervised_random_parameter",
+      "spatial_region": "interior_unsupervised_spatial",
+      "e1": "7.4620459",
+      "e2": "5.4694568",
+      "e3": "9.2977577",
+      "t1": "0.054781324",
+      "t2": "0.031180696",
+      "t3": "0.028459079",
+      "mae_pct": "3.285195",
+      "max_pct": "39.100341",
+      "n_points": "363"
+    },
+    {
+      "case_id": "random_interior_000",
+      "parameter_region": "unsupervised_random_parameter",
+      "spatial_region": "interface_sparse_focus",
+      "e1": "7.4620459",
+      "e2": "5.4694568",
+      "e3": "9.2977577",
+      "t1": "0.054781324",
+      "t2": "0.031180696",
+      "t3": "0.028459079",
+      "mae_pct": "2.678730",
+      "max_pct": "30.806370",
+      "n_points": "242"
+    },
+    {
+      "case_id": "random_interior_000",
+      "parameter_region": "unsupervised_random_parameter",
+      "spatial_region": "top_surface_sparse_focus",
+      "e1": "7.4620459",
+      "e2": "5.4694568",
+      "e3": "9.2977577",
+      "t1": "0.054781324",
+      "t2": "0.031180696",
+      "t3": "0.028459079",
+      "mae_pct": "3.871637",
+      "max_pct": "17.063013",
+      "n_points": "121"
+    }
+  ]
+}

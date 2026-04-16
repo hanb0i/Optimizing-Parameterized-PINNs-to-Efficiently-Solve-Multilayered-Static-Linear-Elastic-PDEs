@@ -1,0 +1,7 @@
+variant,status,mean_top_uz_mae_pct,worst_top_uz_mae_pct,mean_volume_mae_pct,worst_volume_mae_pct,checkpoint
++ Interface continuity enforcement,not_applicable_single_layer,,,,,
+Pure-physics baseline,evaluated_shared_pure_physics_checkpoint,156.995786,318.304840,57.118761,117.998798,/Users/jade/PiNNs/Optimizing_Parameterized_Physics-Informed_Neural_Networks_to_Efficiently_Solve_Multilayer_Collision/one-layer-workflow/pinn_model.pth
++ Compliance-aware scaling,evaluated_shared_pure_physics_checkpoint,11.848957,23.800947,4.389979,8.236946,/Users/jade/PiNNs/Optimizing_Parameterized_Physics-Informed_Neural_Networks_to_Efficiently_Solve_Multilayer_Collision/one-layer-workflow/pinn_model.pth
++ Tuned compliance-aware scaling,evaluated_shared_pure_physics_checkpoint,1.710649,2.744457,1.153485,1.628319,/Users/jade/PiNNs/Optimizing_Parameterized_Physics-Informed_Neural_Networks_to_Efficiently_Solve_Multilayer_Collision/one-layer-workflow/pinn_model.pth
++ Sparse FEM supervision,missing_checkpoint,,,,,/Users/jade/PiNNs/Optimizing_Parameterized_Physics-Informed_Neural_Networks_to_Efficiently_Solve_Multilayer_Collision/graphs/data/one_layer_ablation_runs/plus_sparse_fem_supervision/pinn_model.pth
+Full one-layer framework,missing_checkpoint,,,,,/Users/jade/PiNNs/Optimizing_Parameterized_Physics-Informed_Neural_Networks_to_Efficiently_Solve_Multilayer_Collision/graphs/data/one_layer_ablation_runs/full_one_layer_framework/pinn_model.pth

@@ -1,0 +1,30 @@
+{
+  "model_path": "one-layer-workflow/pinn_model.pth",
+  "mesh": {
+    "ne_x": 10,
+    "ne_y": 10,
+    "ne_z": 4
+  },
+  "fem_seconds_mean": 0.04342883333333333,
+  "fem_seconds_worst": 0.049668,
+  "pinn_eval_seconds_mean": 0.0008853333333333335,
+  "pinn_eval_seconds_worst": 0.00155,
+  "mean_per_case_speedup": 52.151124611611486,
+  "one_time_training_cost": {
+    "note": "No one-time training timing artifact found for this checkpoint."
+  },
+  "per_case_evaluation_cost_note": "PINN evaluation time excludes one-time training; FEM time is per solved case.",
+  "sparse_vs_fuller_supervision": {
+    "supervision_cases": 9,
+    "mesh_nodes_per_case": 10571,
+    "supervision_mesh": {
+      "ne_x": 30,
+      "ne_y": 30,
+      "ne_z": 10
+    },
+    "sparse_supervision_points": 9000,
+    "fuller_supervision_points_same_mesh": 95139,
+    "sparse_fraction_of_fuller_same_mesh": 0.09459842966606755,
+    "default_checkpoint_uses_fem_supervision": false
+  }
+}

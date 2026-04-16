@@ -1,0 +1,93 @@
+{
+  "model_path": "graphs/data/ablation_runs/full_framework/pinn_model.pth",
+  "mesh": {
+    "ne_x": 8,
+    "ne_y": 8,
+    "ne_z": 4
+  },
+  "base_params": {
+    "PINN_DISPLACEMENT_COMPLIANCE_SCALE": 1.0,
+    "PINN_E_COMPLIANCE_POWER": 0.95,
+    "PINN_THICKNESS_COMPLIANCE_ALPHA": 3.0
+  },
+  "feature_names": [
+    "bias",
+    "log_e_mean",
+    "log_e1",
+    "log_e2",
+    "log_e3",
+    "log_h_over_total_t",
+    "t1_fraction",
+    "t2_fraction",
+    "t3_fraction",
+    "z_hat",
+    "z_hat_squared",
+    "load_patch_indicator",
+    "x_centered",
+    "y_centered",
+    "x_centered_squared",
+    "y_centered_squared",
+    "x_y_centered",
+    "load_patch_x_centered",
+    "load_patch_y_centered",
+    "load_patch_x_centered_squared",
+    "load_patch_y_centered_squared"
+  ],
+  "feature_coefficients": [
+    0.22697816192615045,
+    0.3672320542943013,
+    -0.2971136177474835,
+    -0.20308435782216708,
+    -0.3167548618177444,
+    0.05601165363813525,
+    0.17352124346140455,
+    0.06810697106434889,
+    -0.014650052599626767,
+    0.2269781619261525,
+    0.22697816192615256,
+    0.5513532768044942,
+    -0.030384172041954847,
+    -0.06632224067659216,
+    -0.13882868223588782,
+    -0.1375958655650478,
+    0.0008722078437515363,
+    -0.0017694620391283692,
+    -0.003821634865351005,
+    0.001336256044521775,
+    0.0013488839911562508
+  ],
+  "log_multiplier_clip": 1.5,
+  "calibration_metrics_uncalibrated": {
+    "top_mae_pct_mean": 9.702622451531347,
+    "top_mae_pct_worst": 14.657399625078284,
+    "volume_mae_pct_mean": 4.627722000880883,
+    "volume_mae_pct_worst": 6.522589860842963,
+    "top_max_pct_worst": 88.07382193091834,
+    "all_top_cases_below_5_pct": false
+  },
+  "calibration_metrics_tuned": {
+    "top_mae_pct_mean": 4.465162026713774,
+    "top_mae_pct_worst": 7.891437907711736,
+    "volume_mae_pct_mean": 3.329736968694631,
+    "volume_mae_pct_worst": 5.012393232215124,
+    "top_max_pct_worst": 52.575242848529605,
+    "all_top_cases_below_5_pct": false
+  },
+  "holdout_metrics_uncalibrated": {
+    "top_mae_pct_mean": 7.661980808041466,
+    "top_mae_pct_worst": 8.870901751149455,
+    "volume_mae_pct_mean": 4.095718384156381,
+    "volume_mae_pct_worst": 4.657079373700214,
+    "top_max_pct_worst": 78.15829932567785,
+    "all_top_cases_below_5_pct": false
+  },
+  "holdout_metrics_tuned": {
+    "top_mae_pct_mean": 5.805655171251866,
+    "top_mae_pct_worst": 14.226547287647922,
+    "volume_mae_pct_mean": 3.1514495775241835,
+    "volume_mae_pct_worst": 4.074191040840624,
+    "top_max_pct_worst": 58.80358210625625,
+    "all_top_cases_below_5_pct": false
+  },
+  "note": "The PINN remains the solver. This file defines a transparent multiplicative compliance calibration applied to PINN displacement outputs."
+}

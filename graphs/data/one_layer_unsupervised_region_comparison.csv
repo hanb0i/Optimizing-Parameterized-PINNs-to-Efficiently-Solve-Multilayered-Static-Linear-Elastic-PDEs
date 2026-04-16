@@ -1,0 +1,7 @@
+case_id,parameter_region,spatial_region,E,thickness,mae_pct,max_pct,n_points
+one_layer_supervised_param_mid,supervised_parameter_grid,bottom_surface,5,0.1,2.475294,19.344543,121
+one_layer_supervised_param_mid,supervised_parameter_grid,interior_volume,5,0.1,1.548416,19.728274,605
+one_layer_supervised_param_mid,supervised_parameter_grid,top_surface,5,0.1,2.263058,19.426543,121
+one_layer_random_000,unsupervised_random_parameter,bottom_surface,7.4620459,0.099660631,2.369974,18.227922,121
+one_layer_random_000,unsupervised_random_parameter,interior_volume,7.4620459,0.099660631,1.456727,18.622514,605
+one_layer_random_000,unsupervised_random_parameter,top_surface,7.4620459,0.099660631,2.150746,18.317493,121
