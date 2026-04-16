@@ -51,6 +51,12 @@ def main() -> None:
             cmd.extend(["--device", args.device])
         _run(cmd, env)
 
+    _run([_python(), "scripts/tune_compliance_calibration.py", "--model-path", args.model_path], env)
+    _run([_python(), "scripts/tune_three_layer_compliance_calibration.py", "--model-path", args.model_path, "--ridge", "10"], env)
+    three_layer_env = dict(env)
+    three_layer_cal = REPO_ROOT / "graphs" / "data" / "three_layer_compliance_calibration.json"
+    if three_layer_cal.exists():
+        three_layer_env["PINN_CALIBRATION_JSON"] = str(three_layer_cal)
     _run(
         [
             _python(),
@@ -60,11 +66,10 @@ def main() -> None:
             "--n-cases",
             str(args.random_cases),
         ],
-        env,
+        three_layer_env,
     )
-    _run([_python(), "scripts/tune_compliance_calibration.py", "--model-path", args.model_path], env)
-    _run([_python(), "scripts/run_unsupervised_region_comparison.py", "--model-path", args.model_path], env)
-    _run([_python(), "scripts/report_efficiency_timing.py", "--model-path", args.model_path], env)
+    _run([_python(), "scripts/run_unsupervised_region_comparison.py", "--model-path", args.model_path], three_layer_env)
+    _run([_python(), "scripts/report_efficiency_timing.py", "--model-path", args.model_path], three_layer_env)
     _run([_python(), "scripts/tune_one_layer_compliance_calibration.py", "--model-path", args.one_layer_model_path], env)
     tuned_env = dict(env)
     one_layer_cal = REPO_ROOT / "graphs" / "data" / "one_layer_compliance_calibration.json"

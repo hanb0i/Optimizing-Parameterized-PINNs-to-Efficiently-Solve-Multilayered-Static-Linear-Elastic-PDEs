@@ -30,6 +30,8 @@ import fem_solver  # noqa: E402
 import model  # noqa: E402
 import pinn_config as config  # noqa: E402
 
+_CALIBRATION_CACHE: dict[str, dict | None] = {}
+
 
 @dataclass(frozen=True)
 class ThreeLayerCase:
@@ -89,7 +91,86 @@ def u_from_v(v: np.ndarray, pts: np.ndarray) -> np.ndarray:
     alpha = float(getattr(config, "THICKNESS_COMPLIANCE_ALPHA", 0.0))
     scale = float(getattr(config, "DISPLACEMENT_COMPLIANCE_SCALE", 1.0))
     h_ref = float(getattr(config, "H", 1.0))
-    return scale * v / (e_scale**e_pow) * (h_ref / np.clip(t_scale, 1e-8, None)) ** alpha
+    u = scale * v / (e_scale**e_pow) * (h_ref / np.clip(t_scale, 1e-8, None)) ** alpha
+    multiplier = calibration_multiplier(pts)
+    if multiplier is not None:
+        u = u * multiplier
+    return u
+
+
+def calibration_features(pts: np.ndarray) -> np.ndarray:
+    x = pts[:, 0:1]
+    y = pts[:, 1:2]
+    z = pts[:, 2:3]
+    e1 = pts[:, 3:4]
+    t1 = pts[:, 4:5]
+    e2 = pts[:, 5:6]
+    t2 = pts[:, 6:7]
+    e3 = pts[:, 7:8]
+    t3 = pts[:, 8:9]
+    t_total = np.clip(t1 + t2 + t3, 1e-8, None)
+    e_mean = np.clip((e1 + e2 + e3) / 3.0, 1e-8, None)
+    z_hat = z / t_total
+    e_ref = np.sqrt(float(config.E_RANGE[0]) * float(config.E_RANGE[1]))
+    h_ref = float(getattr(config, "H", 0.1))
+    load_x = ((x >= config.LOAD_PATCH_X[0]) & (x <= config.LOAD_PATCH_X[1])).astype(float)
+    load_y = ((y >= config.LOAD_PATCH_Y[0]) & (y <= config.LOAD_PATCH_Y[1])).astype(float)
+    load_patch = load_x * load_y
+    xc = x - 0.5 * float(config.Lx)
+    yc = y - 0.5 * float(config.Ly)
+    feats = np.concatenate(
+        [
+            np.ones_like(x),
+            np.log(e_mean / e_ref),
+            np.log(np.clip(e1, 1e-8, None) / e_ref),
+            np.log(np.clip(e2, 1e-8, None) / e_ref),
+            np.log(np.clip(e3, 1e-8, None) / e_ref),
+            np.log(h_ref / t_total),
+            t1 / t_total,
+            t2 / t_total,
+            t3 / t_total,
+            z_hat,
+            z_hat**2,
+            load_patch,
+            xc,
+            yc,
+            xc**2,
+            yc**2,
+            xc * yc,
+            load_patch * xc,
+            load_patch * yc,
+            load_patch * xc**2,
+            load_patch * yc**2,
+        ],
+        axis=1,
+    )
+    return np.nan_to_num(feats, nan=0.0, posinf=0.0, neginf=0.0)
+
+
+def _load_calibration() -> dict | None:
+    path = os.getenv("PINN_CALIBRATION_JSON")
+    if not path:
+        return None
+    if path not in _CALIBRATION_CACHE:
+        cal_path = Path(path)
+        _CALIBRATION_CACHE[path] = json.loads(cal_path.read_text()) if cal_path.exists() else None
+    return _CALIBRATION_CACHE[path]
+
+
+def calibration_multiplier(pts: np.ndarray) -> np.ndarray | None:
+    cal = _load_calibration()
+    if not cal:
+        return None
+    coeffs = cal.get("feature_coefficients")
+    if coeffs is None:
+        return None
+    coeffs_arr = np.asarray(coeffs, dtype=float).reshape(-1, 1)
+    feats = calibration_features(pts)
+    with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
+        log_multiplier = np.nan_to_num(feats @ coeffs_arr, nan=0.0, posinf=0.0, neginf=0.0)
+    clip = float(cal.get("log_multiplier_clip", 1.5))
+    multiplier = np.exp(np.clip(log_multiplier, -clip, clip))
+    return multiplier
 
 
 def make_points(x: np.ndarray, y: np.ndarray, z: np.ndarray, case: ThreeLayerCase) -> np.ndarray:
