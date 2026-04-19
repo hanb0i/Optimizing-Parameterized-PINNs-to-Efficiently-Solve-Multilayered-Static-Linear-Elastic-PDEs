@@ -16,7 +16,7 @@ import torch
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PINN_DIR = REPO_ROOT / "pinn-workflow"
-if not PINN_DIR.exists():
+if not PINN_DIR.exists() or not (PINN_DIR / "model.py").exists():
     PINN_DIR = REPO_ROOT / "three-layer-workflow"
 FEA_DIR = REPO_ROOT / "fea-workflow" / "solver"
 GRAPHS_DATA_DIR = REPO_ROOT / "graphs" / "data"

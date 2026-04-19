@@ -1,3 +1,6 @@
+#!/usr/bin/env python3
+"""Grid-sweep evaluation for all three-layer ablation variants."""
+
 from __future__ import annotations
 
 import argparse
@@ -15,55 +18,31 @@ def _python() -> str:
     return sys.executable or "python3"
 
 
-def _run(cmd: list[str], env: dict[str, str], log_path: Path) -> str:
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    print(f"Running: {' '.join(cmd)}")
-    proc = subprocess.run(
-        cmd,
-        cwd=str(REPO_ROOT),
-        env={**os.environ, **env},
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        check=False,
-    )
-    log_path.write_text(proc.stdout)
-    if proc.returncode != 0:
-        raise RuntimeError(f"Command failed (exit {proc.returncode}). See log: {log_path}")
-    return proc.stdout
-
-
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run three-layer PINN ablation variants (FEM-referenced).")
-    parser.add_argument("--epochs-soap", type=int, default=None, help="Override PINN_EPOCHS_SOAP for all runs")
+    parser = argparse.ArgumentParser(
+        description="Run grid-sweep evaluation on all three-layer ablation variants."
+    )
     parser.add_argument("--device", default=None, help="Override PINN_DEVICE (cpu/cuda/mps)")
-    parser.add_argument("--skip-train", action="store_true", help="Skip training if checkpoint exists for a variant")
-    parser.add_argument("--n-cases", type=int, default=8, help="Random interior evaluation cases per variant")
-    parser.add_argument("--seed", type=int, default=20260415, help="Seed for random interior evaluation")
     args = parser.parse_args()
 
-    out_csv = DATA_DIR / "ablation_results.csv"
-    runs_dir = DATA_DIR / "ablation_runs"
+    out_csv = DATA_DIR / "ablation_grid_sweep_results.csv"
     logs_dir = DATA_DIR / "ablation_logs"
-    runs_dir.mkdir(parents=True, exist_ok=True)
     logs_dir.mkdir(parents=True, exist_ok=True)
 
     base_env = {
         "MPLCONFIGDIR": str(REPO_ROOT / ".mplconfig"),
         "PYTHONPYCACHEPREFIX": str(REPO_ROOT / ".pycache"),
-        "PINN_WARM_START": "0",
-        "PINN_SUPERVISION_CACHE": "1",
-        "PINN_REGEN_SUPERVISION": "0",
+        "PINN_FORCE_CPU": "0",
     }
-    calibration_path = DATA_DIR / "three_layer_compliance_calibration.json"
-    if args.epochs_soap is not None:
-        base_env["PINN_EPOCHS_ADAM"] = str(args.epochs_soap)
-        base_env["PINN_EPOCHS_SOAP"] = str(args.epochs_soap)
     if args.device:
         base_env["PINN_DEVICE"] = str(args.device)
 
-    # Variants match the paper table.
-    variants: list[tuple[str, dict[str, str]]] = [
+    calibration_path = DATA_DIR / "three_layer_compliance_calibration.json"
+
+    runs_dir = DATA_DIR / "ablation_runs"
+
+    # Same variants & overrides as run_ablation_three_layer.py
+    variants: list[tuple[str, dict[str, str], Path]] = [
         (
             "Base parametric PINN",
             {
@@ -77,6 +56,7 @@ def main() -> None:
                 "PINN_W_DATA": "0",
                 "PINN_N_DATA_POINTS": "0",
             },
+            runs_dir / "base_parametric_pinn" / "pinn_model.pth",
         ),
         (
             "+ Compliance-aware scaling",
@@ -92,6 +72,7 @@ def main() -> None:
                 "PINN_W_DATA": "0",
                 "PINN_N_DATA_POINTS": "0",
             },
+            runs_dir / "plus_compliance_aware_scaling" / "pinn_model.pth",
         ),
         (
             "+ Layerwise PDE decomposition",
@@ -106,6 +87,7 @@ def main() -> None:
                 "PINN_W_DATA": "0",
                 "PINN_N_DATA_POINTS": "0",
             },
+            runs_dir / "plus_layerwise_pde_decomposition" / "pinn_model.pth",
         ),
         (
             "+ Interface continuity enforcement",
@@ -120,6 +102,7 @@ def main() -> None:
                 "PINN_W_DATA": "0",
                 "PINN_N_DATA_POINTS": "0",
             },
+            runs_dir / "plus_interface_continuity_enforcement" / "pinn_model.pth",
         ),
         (
             "+ Sparse FEM supervision",
@@ -138,6 +121,7 @@ def main() -> None:
                 "PINN_FEM_NE_Y": "10",
                 "PINN_FEM_NE_Z": "4",
             },
+            runs_dir / "plus_sparse_fem_supervision" / "pinn_model.pth",
         ),
         (
             "Full framework",
@@ -158,79 +142,102 @@ def main() -> None:
                 "PINN_FEM_NE_Y": "10",
                 "PINN_FEM_NE_Z": "4",
             },
+            runs_dir / "full_framework" / "pinn_model.pth",
         ),
     ]
 
     rows: list[dict[str, str]] = []
-    for variant_name, overrides in variants:
-        variant_slug = (
-            variant_name.lower()
-            .replace(" ", "_")
-            .replace("+", "plus")
-            .replace("/", "_")
-            .replace("-", "_")
-        )
-        run_dir = runs_dir / variant_slug
-        run_dir.mkdir(parents=True, exist_ok=True)
-        ckpt_path = run_dir / "pinn_model.pth"
 
-        env = dict(base_env)
-        env.update(overrides)
-        env["PINN_OUT_DIR"] = str(run_dir)
-        env["PINN_EVAL_OUT_DIR"] = str(run_dir / "eval_viz")
-        env["PINN_MODEL_PATH"] = str(ckpt_path)
-        if variant_name == "Full framework" and calibration_path.exists():
-            env["PINN_CALIBRATION_JSON"] = str(calibration_path)
+    # Temporarily rename pinn-workflow to avoid import conflicts
+    pinn_workflow = REPO_ROOT / "pinn-workflow"
+    pinn_workflow_temp = REPO_ROOT / "pinn-workflow-temp"
+    renamed = False
+    if pinn_workflow.exists():
+        pinn_workflow.rename(pinn_workflow_temp)
+        renamed = True
+        print("Temporarily renamed pinn-workflow -> pinn-workflow-temp")
 
-        print("\n" + "=" * 80)
-        print(f"Variant: {variant_name}")
-        print(f"Output dir: {run_dir}")
+    try:
+        for variant_name, overrides, ckpt_path in variants:
+            print("\n" + "=" * 80)
+            print(f"Variant: {variant_name}")
+            print(f"Checkpoint: {ckpt_path}")
 
-        if args.skip_train and ckpt_path.exists():
-            print(f"Skipping training (checkpoint exists): {ckpt_path}")
-        else:
-            _run(
-                [_python(), "three-layer-workflow/train.py"],
-                env=env,
-                log_path=logs_dir / f"{variant_slug}_train.log",
+            if not ckpt_path.exists():
+                print(f"WARNING: checkpoint not found, skipping.")
+                rows.append({
+                    "variant": variant_name,
+                    "mean_mae": "N/A",
+                    "worst_mae": "N/A",
+                })
+                continue
+
+            env = dict(base_env)
+            env.update(overrides)
+            env["PINN_MODEL_PATH"] = str(ckpt_path)
+            env["PINN_EVAL_OUT_DIR"] = str(runs_dir / variant_name.lower().replace(" ", "_").replace("+", "plus").replace("/", "_").replace("-", "_") / "grid_sweep_viz")
+
+            if variant_name == "Full framework" and calibration_path.exists():
+                env["PINN_CALIBRATION_JSON"] = str(calibration_path)
+
+            log_path = logs_dir / f"{variant_name.lower().replace(' ', '_').replace('+', 'plus').replace('/', '_').replace('-', '_')}_grid_sweep.log"
+
+            cmd = [_python(), str(REPO_ROOT / "compare_three_layer_pinn_fem.py")]
+            print(f"Running: {' '.join(cmd)}")
+            proc = subprocess.run(
+                cmd,
+                cwd=str(REPO_ROOT),
+                env={**os.environ, **env},
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
             )
+            log_path.write_text(proc.stdout)
 
-        eval_summary = run_dir / "random_interior_generalization_summary.json"
-        eval_csv = run_dir / "random_interior_generalization.csv"
-        _run(
-            [
-                _python(),
-                "scripts/run_random_interior_generalization.py",
-                "--model-path",
-                str(ckpt_path),
-                "--n-cases",
-                str(args.n_cases),
-                "--seed",
-                str(args.seed),
-                "--out-csv",
-                str(eval_csv),
-                "--out-summary",
-                str(eval_summary),
-            ],
-            env=env,
-            log_path=logs_dir / f"{variant_slug}_eval.log",
-        )
-        summary = json.loads(eval_summary.read_text())
-        mean_mae = float(summary["top_uz_mae_pct_mean"])
-        worst_mae = float(summary["top_uz_mae_pct_worst"])
-        print(f"  mean MAE (%):  {mean_mae:.2f}")
-        print(f"  worst MAE (%): {worst_mae:.2f}")
+            if proc.returncode != 0:
+                print(f"ERROR: grid sweep failed (exit {proc.returncode}). See log: {log_path}")
+                rows.append({
+                    "variant": variant_name,
+                    "mean_mae": "ERROR",
+                    "worst_mae": "ERROR",
+                })
+                continue
 
-        rows.append({"variant": variant_name, "mean_mae": f"{mean_mae:.4f}", "worst_mae": f"{worst_mae:.4f}"})
+            # Parse stdout for mean and worst MAE
+            mean_mae = None
+            worst_mae = None
+            for line in proc.stdout.splitlines():
+                if "Three-layer sweep mean MAE=" in line:
+                    mean_mae = line.split("Three-layer sweep mean MAE=")[1].split("%")[0].strip()
+                if "Three-layer sweep worst MAE=" in line:
+                    worst_mae = line.split("Three-layer sweep worst MAE=")[1].split("%")[0].strip()
 
-    out_csv.parent.mkdir(parents=True, exist_ok=True)
-    with out_csv.open("w", newline="") as f:
+            if mean_mae is None or worst_mae is None:
+                print(f"WARNING: could not parse MAE values from stdout.")
+                print(proc.stdout[-500:])
+
+            rows.append({
+                "variant": variant_name,
+                "mean_mae": mean_mae or "N/A",
+                "worst_mae": worst_mae or "N/A",
+            })
+            print(f"  mean MAE (%): {mean_mae}")
+            print(f"  worst MAE (%): {worst_mae}")
+
+    finally:
+        if renamed:
+            pinn_workflow_temp.rename(pinn_workflow)
+            print("Restored pinn-workflow-temp -> pinn-workflow")
+
+    # Write CSV
+    with open(out_csv, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=["variant", "mean_mae", "worst_mae"])
         writer.writeheader()
         writer.writerows(rows)
 
-    print("\nWrote ablation results:")
-    print(f"  - {out_csv}")
+    print(f"\nWrote grid-sweep results to {out_csv}")
+    for r in rows:
+        print(f"  {r['variant']}: mean={r['mean_mae']}%, worst={r['worst_mae']}%")
 
 
 if __name__ == "__main__":
