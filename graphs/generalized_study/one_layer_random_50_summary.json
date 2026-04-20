@@ -1,0 +1,16 @@
+{
+  "model_path": "/Users/hanbosong/GitHub/Basic-PiNN-Model-For-Three-Layered-Collision/one-layer-workflow/pinn_model.pth",
+  "seed": 20260415,
+  "n_cases": 50,
+  "mesh": {
+    "ne_x": 8,
+    "ne_y": 8,
+    "ne_z": 4
+  },
+  "top_uz_mae_pct_mean": 8.733442279999998,
+  "top_uz_mae_pct_worst": 24.148708,
+  "volume_mae_pct_mean": 3.3727515200000004,
+  "volume_mae_pct_worst": 8.347991,
+  "all_top_cases_below_5_pct": false,
+  "all_volume_cases_below_5_pct": false
+}

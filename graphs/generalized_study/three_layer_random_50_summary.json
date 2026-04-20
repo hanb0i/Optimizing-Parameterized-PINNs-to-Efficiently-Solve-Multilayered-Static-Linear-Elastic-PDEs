@@ -1,0 +1,16 @@
+{
+  "model_path": "three-layer-workflow/pinn_model.pth",
+  "seed": 20260415,
+  "n_cases": 50,
+  "mesh": {
+    "ne_x": 8,
+    "ne_y": 8,
+    "ne_z": 4
+  },
+  "top_uz_mae_pct_mean": 9.727665360000001,
+  "top_uz_mae_pct_worst": 12.952898,
+  "volume_mae_pct_mean": 4.31756542,
+  "volume_mae_pct_worst": 5.762763,
+  "all_top_cases_below_5_pct": false,
+  "all_volume_cases_below_5_pct": false
+}
