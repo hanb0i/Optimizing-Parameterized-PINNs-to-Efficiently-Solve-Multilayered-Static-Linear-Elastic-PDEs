@@ -1,0 +1,71 @@
+{
+  "model_path": "/Users/jade/PiNNs/Optimizing_Parameterized_Physics-Informed_Neural_Networks_to_Efficiently_Solve_Multilayer_Collision/three-layer-workflow/pinn_model.pth",
+  "seed": 20260423,
+  "n_candidates": 500,
+  "top_k": 5,
+  "calibration_json": "/Users/jade/PiNNs/Optimizing_Parameterized_Physics-Informed_Neural_Networks_to_Efficiently_Solve_Multilayer_Collision/graphs/data/three_layer_compliance_calibration.json",
+  "benchmark_protocol": "random_interior_generalization_style_confirmation",
+  "objective": {
+    "name": "peak_top_surface_downward_deflection",
+    "description": "Minimize the absolute value of the most negative top-surface u_z predicted by the surrogate."
+  },
+  "surrogate_grid": {
+    "ne_x": 20,
+    "ne_y": 20
+  },
+  "fem_confirmation_mesh": {
+    "ne_x": 8,
+    "ne_y": 8,
+    "ne_z": 4
+  },
+  "surrogate_screening": {
+    "best_peak_downward_abs": 0.043905039305827794,
+    "median_peak_downward_abs": 0.18748758119370648,
+    "worst_peak_downward_abs": 2.4300588204088207,
+    "mean_pinn_eval_seconds": 0.0011658119120000036,
+    "total_pinn_eval_seconds": 0.5829059560000018
+  },
+  "best_surrogate_design": {
+    "rank": 1,
+    "case_id": "random_interior_428",
+    "e": [
+      8.549552490366418,
+      9.338299493659413,
+      8.919389372355228
+    ],
+    "t": [
+      0.08393820120543748,
+      0.07610313377139918,
+      0.08540924018883343
+    ],
+    "peak_downward_uz": -0.043905039305827794,
+    "peak_downward_abs": 0.043905039305827794,
+    "mean_patch_uz": -0.03228934013987658,
+    "mean_patch_abs": 0.03228934013987658
+  },
+  "best_fem_confirmed_design_among_top_k": {
+    "rank_within_top_k": 3,
+    "case_id": "random_interior_385",
+    "e": [
+      7.21116519821661,
+      7.679832106882363,
+      9.886029893641862
+    ],
+    "t": [
+      0.06026508514116603,
+      0.09180504080951424,
+      0.0998146179716383
+    ],
+    "fem_peak_downward_uz": -0.04761530162935722,
+    "fem_peak_downward_abs": 0.04761530162935722
+  },
+  "fem_confirmation": {
+    "mean_abs_gap_peak_downward_abs": 0.0048622429011658305,
+    "worst_abs_gap_peak_downward_abs": 0.012924780934262046,
+    "mean_rel_gap_peak_downward_pct": 8.587611663210495,
+    "top_uz_mae_pct_mean": 4.993693200503424,
+    "top_uz_mae_pct_worst": 6.073483035743045,
+    "volume_mae_pct_mean": 2.6443451587038647,
+    "volume_mae_pct_worst": 3.1375225224695193
+  }
+}

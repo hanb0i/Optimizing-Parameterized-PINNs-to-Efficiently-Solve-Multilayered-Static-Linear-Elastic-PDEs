@@ -265,6 +265,95 @@ def evaluate_case_grid(pinn, device: torch.device, case: ThreeLayerCase, ne_x: i
     }
 
 
+def top_surface_grid(case: ThreeLayerCase, ne_x: int, ne_y: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    x_nodes = np.linspace(0.0, float(config.Lx), int(ne_x) + 1)
+    y_nodes = np.linspace(0.0, float(config.Ly), int(ne_y) + 1)
+    xg, yg = np.meshgrid(x_nodes, y_nodes, indexing="ij")
+    zg = np.full_like(xg, case.thickness, dtype=float)
+    return xg, yg, zg
+
+
+def load_patch_mask(x: np.ndarray, y: np.ndarray) -> np.ndarray:
+    return (
+        (x >= float(config.LOAD_PATCH_X[0]))
+        & (x <= float(config.LOAD_PATCH_X[1]))
+        & (y >= float(config.LOAD_PATCH_Y[0]))
+        & (y <= float(config.LOAD_PATCH_Y[1]))
+    )
+
+
+def top_surface_metrics(u_top: np.ndarray, xg: np.ndarray, yg: np.ndarray) -> dict:
+    uz = np.asarray(u_top)[..., 2]
+    peak_downward_uz = float(np.min(uz))
+    peak_downward_abs = float(abs(peak_downward_uz))
+    patch = load_patch_mask(xg, yg)
+    patch_uz = uz[patch] if np.any(patch) else uz.reshape(-1)
+    mean_patch_uz = float(np.mean(patch_uz))
+    mean_patch_abs = float(np.mean(np.abs(patch_uz)))
+    return {
+        "peak_downward_uz": peak_downward_uz,
+        "peak_downward_abs": peak_downward_abs,
+        "mean_patch_uz": mean_patch_uz,
+        "mean_patch_abs": mean_patch_abs,
+        "n_patch_points": int(patch_uz.size),
+    }
+
+
+def case_grid_top_surface_metrics(result: dict) -> dict:
+    x_nodes = np.asarray(result["x_nodes"])
+    y_nodes = np.asarray(result["y_nodes"])
+    xg, yg = np.meshgrid(x_nodes, y_nodes, indexing="ij")
+    fem_top = np.asarray(result["u_fem"])[:, :, -1, :]
+    pinn_top = np.asarray(result["u_pinn"])[:, :, -1, :]
+    fem_metrics = top_surface_metrics(fem_top, xg, yg)
+    pinn_metrics = top_surface_metrics(pinn_top, xg, yg)
+    return {
+        "x_grid": xg,
+        "y_grid": yg,
+        "fem_top_metrics": fem_metrics,
+        "pinn_top_metrics": pinn_metrics,
+    }
+
+
+def evaluate_case_top_surface(pinn, device: torch.device, case: ThreeLayerCase, ne_x: int, ne_y: int) -> dict:
+    xg, yg, zg = top_surface_grid(case, ne_x, ne_y)
+    pts = make_points(xg.ravel(), yg.ravel(), zg.ravel(), case)
+    start = time.perf_counter()
+    u_top = predict_displacement(pinn, device, pts).reshape(xg.shape + (3,))
+    elapsed = time.perf_counter() - start
+    metrics = top_surface_metrics(u_top, xg, yg)
+    metrics.update(
+        {
+            "case": case,
+            "x_grid": xg,
+            "y_grid": yg,
+            "z_grid": zg,
+            "u_top": u_top,
+            "pinn_eval_seconds": elapsed,
+            "n_eval_points": int(xg.size),
+        }
+    )
+    return metrics
+
+
+def fem_top_surface_metrics(case: ThreeLayerCase, ne_x: int, ne_y: int, ne_z: int) -> dict:
+    x_nodes, y_nodes, _z_nodes, u_fem, fem_seconds = solve_fem_case(case, ne_x, ne_y, ne_z)
+    xg, yg = np.meshgrid(x_nodes, y_nodes, indexing="ij")
+    u_top = u_fem[:, :, -1, :]
+    metrics = top_surface_metrics(u_top, xg, yg)
+    metrics.update(
+        {
+            "case": case,
+            "x_grid": xg,
+            "y_grid": yg,
+            "u_top": u_top,
+            "fem_seconds": fem_seconds,
+            "n_eval_points": int(xg.size),
+        }
+    )
+    return metrics
+
+
 def random_interior_cases(n_cases: int, seed: int) -> list[ThreeLayerCase]:
     rng = np.random.default_rng(seed)
     e_min, e_max = [float(v) for v in getattr(config, "E_RANGE", [1.0, 10.0])]

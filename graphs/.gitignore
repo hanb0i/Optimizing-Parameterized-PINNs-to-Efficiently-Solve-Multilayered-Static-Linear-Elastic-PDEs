@@ -20,6 +20,12 @@ data/*
 !figures/fig_geometry_bc.pdf
 !figures/fig_random_interior_generalization.png
 !figures/fig_random_interior_generalization.pdf
+!figures/fig_surrogate_optimization.png
+!figures/fig_surrogate_optimization.pdf
+!figures/fig_surrogate_optimization_mean_patch.png
+!figures/fig_surrogate_optimization_mean_patch.pdf
+!figures/fig_surrogate_optimization_process.png
+!figures/fig_surrogate_optimization_process.pdf
 !figures/fig_unsupervised_region_summary.png
 !figures/fig_unsupervised_region_summary.pdf
 !figures/fig_one_layer_ablation.png
@@ -42,6 +48,14 @@ data/*
 !data/efficiency_timing_summary.json
 !data/random_interior_generalization.csv
 !data/random_interior_generalization_summary.json
+!data/surrogate_optimization_candidates.csv
+!data/surrogate_optimization_topk.csv
+!data/surrogate_optimization_confirmation.csv
+!data/surrogate_optimization_summary.json
+!data/surrogate_optimization_mean_patch_candidates.csv
+!data/surrogate_optimization_mean_patch_topk.csv
+!data/surrogate_optimization_mean_patch_confirmation.csv
+!data/surrogate_optimization_mean_patch_summary.json
 !data/three_layer_compliance_calibration.json
 !data/unsupervised_region_comparison.csv
 !data/unsupervised_region_summary.json
