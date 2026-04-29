@@ -17,16 +17,29 @@ From the repo root:
 
 All figures are written to `graphs/figures/` as both PNG and PDF.
 
+## Benchmark and Reporting Protocol
+
+One-layer and three-layer generalization scripts now default to a consistent
+`16×16×8` FEM mesh and report integral/relative L2 error, mean displacement
+error, average displacement comparison, and max error as a secondary diagnostic.
+Random held-out studies use fixed seeds and write the sampled parameter values to
+CSV so cases are reproducible.
+
+Timing reports run FEM repeatedly by default (`--repeats 100`) and write both
+measured per-configuration costs and `1,000,000`-configuration estimates. If a
+smaller repeat count is used, the JSON summary records the actual measured count.
+
 ## Ablation Runner (Generates Real Results)
 
-Run the three-layer ablation sweep (trains and evaluates multiple variants on the
-same random-interior FEM-referenced protocol used by the generalization study):
+Run the three-layer backward ablation sweep. It starts from the full model and
+removes one component at a time, then evaluates each variant on the same
+random-interior FEM-referenced protocol used by the generalization study:
 
 `python3 graphs/scripts/run_ablation_three_layer.py`
 
 Outputs:
 
-- `graphs/data/ablation_results.csv` (schema: `variant,mean_mae,worst_mae`, values are percent)
+- `graphs/data/ablation_results.csv` (includes removed component, mean/worst MAE, and mean/worst relative L2; values are percent)
 - Per-variant checkpoints and evaluator visualizations under `graphs/data/ablation_runs/`
 - Logs under `graphs/data/ablation_logs/`
 
@@ -37,7 +50,8 @@ Then render the ablation table figure:
 Notes:
 
 - `mean_mae` / `worst_mae` are top-surface `u_z` MAE percentages over the
-  random-interior evaluation cases, not the older exhaustive corner sweep.
+  random-interior evaluation cases, while relative L2 columns are the primary
+  integral-error metrics.
 - The full-framework row automatically uses
   `graphs/data/three_layer_compliance_calibration.json` when that artifact is present.
 - The runner sets `PINN_WARM_START=0` by default for fairness.

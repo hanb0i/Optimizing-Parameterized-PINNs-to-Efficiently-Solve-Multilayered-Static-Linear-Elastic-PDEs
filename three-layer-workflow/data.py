@@ -267,7 +267,8 @@ def load_fem_supervision_data(
         "p0": float(getattr(config, "p0", 1.0)),
         "load_patch": [list(getattr(config, "LOAD_PATCH_X", [0.0, 1.0])), list(getattr(config, "LOAD_PATCH_Y", [0.0, 1.0]))],
         "nu": float(getattr(config, "nu_vals", [0.3])[0]),
-        "version": 6,
+        "load_profile": "smooth_quartic_patch_face_quadrature",
+        "version": 7,
     }
     cache_key = hashlib.sha256(json.dumps(meta, sort_keys=True).encode("utf-8")).hexdigest()[:16]
     cache_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "supervision_cache")

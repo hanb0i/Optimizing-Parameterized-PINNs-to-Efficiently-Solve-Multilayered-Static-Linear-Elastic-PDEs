@@ -29,7 +29,10 @@ def load_mask(x):
         & (y_coord >= y_min)
         & (y_coord <= y_max)
     )
-    mask = torch.where(in_patch, torch.ones_like(x_coord), torch.zeros_like(x_coord))
+    x_norm = (x_coord - x_min) / max(float(x_max - x_min), 1e-8)
+    y_norm = (y_coord - y_min) / max(float(y_max - y_min), 1e-8)
+    smooth_patch = 16.0 * x_norm * (1.0 - x_norm) * y_norm * (1.0 - y_norm)
+    mask = torch.where(in_patch, smooth_patch, torch.zeros_like(x_coord))
     
     return mask
 

@@ -62,103 +62,38 @@ def main() -> None:
     if args.device:
         base_env["PINN_DEVICE"] = str(args.device)
 
-    # Variants match the paper table.
+    full_overrides = {
+        "PINN_E_COMPLIANCE_POWER": "0.95",
+        "PINN_THICKNESS_COMPLIANCE_ALPHA": "3",
+        "PINN_DISPLACEMENT_COMPLIANCE_SCALE": "1",
+        "PINN_PDE_DECOMPOSE_BY_LAYER": "1",
+        "PINN_W_INTERFACE_U": "300",
+        "PINN_W_PDE": "10",
+        "PINN_W_DATA": "400",
+        "PINN_N_INTERFACE": "16000",
+        "PINN_INTERFACE_SAMPLE_FRACTION": "0.75",
+        "PINN_USE_SUPERVISION_DATA": "1",
+        "PINN_N_DATA_POINTS": "36000",
+        "PINN_SUPERVISION_THICKNESS_POWER": "3.0",
+        "PINN_FEM_NE_X": "16",
+        "PINN_FEM_NE_Y": "16",
+        "PINN_FEM_NE_Z": "8",
+        "PINN_ADAPTIVE_RESAMPLE_EVERY": "500",
+    }
+
+    def without(**overrides: str) -> dict[str, str]:
+        env = dict(full_overrides)
+        env.update(overrides)
+        return env
+
+    # Backward ablation: start from the full model and remove one component.
     variants: list[tuple[str, dict[str, str]]] = [
-        (
-            "Base parametric PINN",
-            {
-                "PINN_E_COMPLIANCE_POWER": "0",
-                "PINN_THICKNESS_COMPLIANCE_ALPHA": "0",
-                "PINN_PDE_DECOMPOSE_BY_LAYER": "0",
-                "PINN_W_INTERFACE_U": "0",
-                "PINN_N_INTERFACE": "2000",
-                "PINN_INTERFACE_SAMPLE_FRACTION": "0.25",
-                "PINN_USE_SUPERVISION_DATA": "0",
-                "PINN_W_DATA": "0",
-                "PINN_N_DATA_POINTS": "0",
-            },
-        ),
-        (
-            "+ Compliance-aware scaling",
-            {
-                "PINN_E_COMPLIANCE_POWER": "0.95",
-                "PINN_THICKNESS_COMPLIANCE_ALPHA": "3",
-                "PINN_DISPLACEMENT_COMPLIANCE_SCALE": "1",
-                "PINN_PDE_DECOMPOSE_BY_LAYER": "0",
-                "PINN_W_INTERFACE_U": "0",
-                "PINN_N_INTERFACE": "2000",
-                "PINN_INTERFACE_SAMPLE_FRACTION": "0.25",
-                "PINN_USE_SUPERVISION_DATA": "0",
-                "PINN_W_DATA": "0",
-                "PINN_N_DATA_POINTS": "0",
-            },
-        ),
-        (
-            "+ Layerwise PDE decomposition",
-            {
-                "PINN_E_COMPLIANCE_POWER": "0",
-                "PINN_THICKNESS_COMPLIANCE_ALPHA": "0",
-                "PINN_PDE_DECOMPOSE_BY_LAYER": "1",
-                "PINN_W_INTERFACE_U": "0",
-                "PINN_N_INTERFACE": "2000",
-                "PINN_INTERFACE_SAMPLE_FRACTION": "0.25",
-                "PINN_USE_SUPERVISION_DATA": "0",
-                "PINN_W_DATA": "0",
-                "PINN_N_DATA_POINTS": "0",
-            },
-        ),
-        (
-            "+ Interface continuity enforcement",
-            {
-                "PINN_E_COMPLIANCE_POWER": "0",
-                "PINN_THICKNESS_COMPLIANCE_ALPHA": "0",
-                "PINN_PDE_DECOMPOSE_BY_LAYER": "0",
-                "PINN_W_INTERFACE_U": "300",
-                "PINN_N_INTERFACE": "16000",
-                "PINN_INTERFACE_SAMPLE_FRACTION": "0.75",
-                "PINN_USE_SUPERVISION_DATA": "0",
-                "PINN_W_DATA": "0",
-                "PINN_N_DATA_POINTS": "0",
-            },
-        ),
-        (
-            "+ Sparse FEM supervision",
-            {
-                "PINN_E_COMPLIANCE_POWER": "0",
-                "PINN_THICKNESS_COMPLIANCE_ALPHA": "0",
-                "PINN_PDE_DECOMPOSE_BY_LAYER": "0",
-                "PINN_W_INTERFACE_U": "0",
-                "PINN_N_INTERFACE": "2000",
-                "PINN_INTERFACE_SAMPLE_FRACTION": "0.25",
-                "PINN_USE_SUPERVISION_DATA": "1",
-                "PINN_W_DATA": "400",
-                "PINN_N_DATA_POINTS": "36000",
-                "PINN_SUPERVISION_THICKNESS_POWER": "3.0",
-                "PINN_FEM_NE_X": "10",
-                "PINN_FEM_NE_Y": "10",
-                "PINN_FEM_NE_Z": "4",
-            },
-        ),
-        (
-            "Full framework",
-            {
-                "PINN_E_COMPLIANCE_POWER": "0.95",
-                "PINN_THICKNESS_COMPLIANCE_ALPHA": "3",
-                "PINN_DISPLACEMENT_COMPLIANCE_SCALE": "1",
-                "PINN_PDE_DECOMPOSE_BY_LAYER": "1",
-                "PINN_W_INTERFACE_U": "300",
-                "PINN_W_PDE": "10",
-                "PINN_W_DATA": "400",
-                "PINN_N_INTERFACE": "16000",
-                "PINN_INTERFACE_SAMPLE_FRACTION": "0.75",
-                "PINN_USE_SUPERVISION_DATA": "1",
-                "PINN_N_DATA_POINTS": "36000",
-                "PINN_SUPERVISION_THICKNESS_POWER": "3.0",
-                "PINN_FEM_NE_X": "10",
-                "PINN_FEM_NE_Y": "10",
-                "PINN_FEM_NE_Z": "4",
-            },
-        ),
+        ("Full model", full_overrides),
+        ("Full model without adaptive sampling", without(PINN_ADAPTIVE_RESAMPLE_EVERY="0")),
+        ("Full model without Fourier features", without(PINN_FOURIER_DIM="0")),
+        ("Full model without FEM supervision", without(PINN_USE_SUPERVISION_DATA="0", PINN_W_DATA="0", PINN_N_DATA_POINTS="0")),
+        ("Full model without optimizer/preconditioner improvements", without(PINN_USE_ADAMW="1")),
+        ("Full model without interface loss", without(PINN_W_INTERFACE_U="0", PINN_N_INTERFACE="2000")),
     ]
 
     rows: list[dict[str, str]] = []
@@ -179,15 +114,36 @@ def main() -> None:
         env["PINN_OUT_DIR"] = str(run_dir)
         env["PINN_EVAL_OUT_DIR"] = str(run_dir / "eval_viz")
         env["PINN_MODEL_PATH"] = str(ckpt_path)
-        if variant_name == "Full framework" and calibration_path.exists():
+        if variant_name == "Full model" and calibration_path.exists():
             env["PINN_CALIBRATION_JSON"] = str(calibration_path)
 
         print("\n" + "=" * 80)
         print(f"Variant: {variant_name}")
         print(f"Output dir: {run_dir}")
 
-        if args.skip_train and ckpt_path.exists():
+        eval_ckpt_path = ckpt_path
+        if args.skip_train and not ckpt_path.exists() and variant_name == "Full model":
+            fallback = REPO_ROOT / "three-layer-workflow" / "pinn_model.pth"
+            if fallback.exists():
+                eval_ckpt_path = fallback
+                print(f"Using existing full-model checkpoint: {fallback}")
+
+        if args.skip_train and eval_ckpt_path.exists():
             print(f"Skipping training (checkpoint exists): {ckpt_path}")
+        elif args.skip_train:
+            removed = "none" if variant_name == "Full model" else variant_name.replace("Full model without ", "")
+            rows.append({
+                "variant": variant_name,
+                "removed_component": removed,
+                "status": "missing_checkpoint_requires_training",
+                "mean_mae": "",
+                "worst_mae": "",
+                "mean_relative_l2": "",
+                "worst_relative_l2": "",
+                "checkpoint": str(ckpt_path),
+            })
+            print(f"Skipping missing variant checkpoint: {ckpt_path}")
+            continue
         else:
             _run(
                 [_python(), "three-layer-workflow/train.py"],
@@ -202,7 +158,7 @@ def main() -> None:
                 _python(),
                 "scripts/run_random_interior_generalization.py",
                 "--model-path",
-                str(ckpt_path),
+                str(eval_ckpt_path),
                 "--n-cases",
                 str(args.n_cases),
                 "--seed",
@@ -218,14 +174,38 @@ def main() -> None:
         summary = json.loads(eval_summary.read_text())
         mean_mae = float(summary["top_uz_mae_pct_mean"])
         worst_mae = float(summary["top_uz_mae_pct_worst"])
+        mean_l2 = float(summary.get("top_uz_relative_l2_pct_mean", mean_mae))
+        worst_l2 = float(summary.get("top_uz_relative_l2_pct_worst", worst_mae))
         print(f"  mean MAE (%):  {mean_mae:.2f}")
         print(f"  worst MAE (%): {worst_mae:.2f}")
 
-        rows.append({"variant": variant_name, "mean_mae": f"{mean_mae:.4f}", "worst_mae": f"{worst_mae:.4f}"})
+        removed = "none" if variant_name == "Full model" else variant_name.replace("Full model without ", "")
+        rows.append({
+            "variant": variant_name,
+            "removed_component": removed,
+            "status": "evaluated_existing_checkpoint" if args.skip_train else "trained_and_evaluated",
+            "mean_mae": f"{mean_mae:.4f}",
+            "worst_mae": f"{worst_mae:.4f}",
+            "mean_relative_l2": f"{mean_l2:.4f}",
+            "worst_relative_l2": f"{worst_l2:.4f}",
+            "checkpoint": str(eval_ckpt_path),
+        })
 
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     with out_csv.open("w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["variant", "mean_mae", "worst_mae"])
+        writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "variant",
+                "removed_component",
+                "status",
+                "mean_mae",
+                "worst_mae",
+                "mean_relative_l2",
+                "worst_relative_l2",
+                "checkpoint",
+            ],
+        )
         writer.writeheader()
         writer.writerows(rows)
 

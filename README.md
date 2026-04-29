@@ -8,6 +8,49 @@ This repository implements a complete pipeline for:
 1. **Physics Simulation**: PINN predicts 3D displacement fields for multi-layered materials
 2. **Validation**: Comparison tools verify PINN accuracy against FEA
 
+## Governing Problem and FEM Formulation
+
+The PDE solved by both FEM and PINN/P2INN is static small-strain linear elasticity. For displacement
+\(\mathbf{u}(\mathbf{x})\), strain \(\boldsymbol{\epsilon}(\mathbf{u})=\frac{1}{2}(\nabla \mathbf{u}+\nabla \mathbf{u}^{T})\), and stress
+\(\boldsymbol{\sigma}(\mathbf{u})=\lambda\,\mathrm{tr}(\boldsymbol{\epsilon})\mathbf{I}+2\mu\boldsymbol{\epsilon}\), the strong form is
+
+\[
+-\nabla\cdot\boldsymbol{\sigma}(\mathbf{u})=\mathbf{b}\quad\mathrm{in}\ \Omega,
+\]
+
+with clamped side boundaries \(\mathbf{u}=\mathbf{0}\) on \(\Gamma_D\), applied top traction
+\(\boldsymbol{\sigma}\mathbf{n}=\bar{\mathbf{t}}\) on the load patch \(\Gamma_t\), and zero traction on free surfaces. The Lamé
+parameters are computed from Young's modulus \(E\) and Poisson ratio \(\nu\) as
+\(\lambda=E\nu/((1+\nu)(1-2\nu))\) and \(\mu=E/(2(1+\nu))\).
+
+The FEM weak form used after the strong form is: find \(\mathbf{u}\in V\) with prescribed Dirichlet data such that
+
+\[
+\int_{\Omega} \boldsymbol{\epsilon}(\mathbf{v}):\boldsymbol{\sigma}(\mathbf{u})\,d\Omega
+=\int_{\Omega}\mathbf{v}\cdot\mathbf{b}\,d\Omega+\int_{\Gamma_t}\mathbf{v}\cdot\bar{\mathbf{t}}\,d\Gamma
+\quad \forall \mathbf{v}\in V_0.
+\]
+
+The current scripts use \(\mathbf{b}=0\) and a smooth downward pressure distribution on the top load patch,
+with the same patch profile in FEM load integration and PINN traction residuals.
+
+## Multilayer Coupling
+
+Layers are ordered bottom-to-top. Each layer has its own Young's modulus and thickness: one-layer cases use `(E, thickness)`, while three-layer cases use `(E1,t1,E2,t2,E3,t3)`. FEM assigns each Hex8 element to a material by its centroid `z` coordinate and cumulative layer thicknesses. Interface nodes are shared, so displacement continuity is enforced by the global displacement DOFs; traction continuity follows from assembled equilibrium across adjacent elements.
+
+The P2INN/PINN uses one continuous network output for the full stack and selects local material parameters by comparing the point coordinate `z` with `t1` and `t1+t2`. The layer ordering matters because the bottom, middle, and top stiffnesses are sampled at different `z` locations, so swapping `E1,E2,E3` changes the stress path and final deflection.
+
+## PINN/P2INN Losses
+
+Training logs save individual components in `loss_history_components.csv`. The total loss is
+
+\[
+\mathcal{L}=w_{pde}\mathcal{L}_{pde}+w_{bc}\mathcal{L}_{bc}+w_{load}\mathcal{L}_{load}
++w_{int}\mathcal{L}_{int}+w_{data}\mathcal{L}_{data}+w_E\mathcal{L}_{energy}.
+\]
+
+The primary terms are \(\mathcal{L}_{pde}=\|-\nabla\cdot\sigma(u)-b\|_2^2\), side Dirichlet and free-surface traction boundary losses in \(\mathcal{L}_{bc}\), top-patch traction loss \(\mathcal{L}_{load}=\|\sigma(u)n-\bar{t}\|_2^2\), interface traction-continuity loss \(\mathcal{L}_{int}\), and sparse FEM supervision \(\mathcal{L}_{data}=\|u_\theta-u_{FEM}\|_2^2\) when enabled. The default three-layer model uses sparse FEM supervision from 36,000 sampled FEM nodal values across the configured training parameter grid; one-layer defaults are physics-only unless `PINN_USE_SUPERVISION_DATA=1`.
+
 ## Repository Structure
 
 ```
@@ -177,11 +220,16 @@ Creates visualizations in `pinn-workflow/visualization_three_layer/`:
 - `{case}_cross_section.png`: Cross-section displacement and error
 - `three_layer_sweep_tmin_E2*.png`: MAE heatmaps across E1-E3 space
 
-### Expected Accuracy
+### Current Accuracy Reporting
 
-With proper training:
-- Mean MAE: < 3% of max displacement
-- Worst-case MAE: < 5-10% (typically at extreme parameter combinations)
+Benchmark scripts now report relative L2/integral error, mean absolute error,
+average displacement error, and max error as a secondary diagnostic. Current
+refined-mesh checks show that the saved one-layer and three-layer checkpoints do
+not both reach the <5% target on held-out top-surface metrics. With transparent
+compliance recalibration, the one-layer held-out top-surface MAE is below 5% on
+the tested set, while the three-layer checkpoint remains above target on some
+cases. Retrain or recalibrate the three-layer model against the corrected smooth
+load-patch formulation before claiming universal <5% top-surface agreement.
 
 ## Configuration Reference
 

@@ -26,6 +26,10 @@ def _global_thickness(x):
     return x[:, 4:5] + x[:, 6:7] + x[:, 8:9]
 
 def _select_E_local(x):
+    # Material lookup by layer: input columns are [z, E1,t1,E2,t2,E3,t3].
+    # Layers are bottom-to-top. The network predicts a single displacement
+    # field, while this lookup selects the constitutive stiffness used in the
+    # PDE and traction residual at each collocation point.
     z_coord = x[:, 2:3]
     e1 = x[:, 3:4]
     e2 = x[:, 5:6]
@@ -55,7 +59,10 @@ def load_mask(x):
         & (y_coord >= y_min)
         & (y_coord <= y_max)
     )
-    mask = torch.where(in_patch, torch.ones_like(x_coord), torch.zeros_like(x_coord))
+    x_norm = (x_coord - x_min) / max(float(x_max - x_min), 1e-8)
+    y_norm = (y_coord - y_min) / max(float(y_max - y_min), 1e-8)
+    smooth_patch = 16.0 * x_norm * (1.0 - x_norm) * y_norm * (1.0 - y_norm)
+    mask = torch.where(in_patch, smooth_patch, torch.zeros_like(x_coord))
     
     return mask
 
@@ -222,6 +229,10 @@ def compute_loss(model, data, device, weights=None):
         z_if = x_if[:, 2:3]
         z_if1 = x_if[:, 4:5]
         z_if2 = x_if[:, 4:5] + x_if[:, 6:7]
+        # Interface traction continuity. Displacement is single-valued because
+        # one network represents all layers; this term penalizes jumps in
+        # sigma n when the same displacement gradient is evaluated with the
+        # material tensor on each side of the interface.
         is_if1 = (torch.abs(z_if - z_if1) <= torch.abs(z_if - z_if2)).squeeze(1)
         left = torch.where(is_if1.unsqueeze(1), traction_1, traction_2)
         right = torch.where(is_if1.unsqueeze(1), traction_2, traction_3)

@@ -9,12 +9,12 @@ import matplotlib.pyplot as plt
 
 
 VARIANTS = [
-    "Base parametric PINN",
-    "+ Compliance-aware scaling",
-    "+ Layerwise PDE decomposition",
-    "+ Interface continuity enforcement",
-    "+ Sparse FEM supervision",
-    "Full framework",
+    "Full model",
+    "Full model without adaptive sampling",
+    "Full model without Fourier features",
+    "Full model without FEM supervision",
+    "Full model without optimizer/preconditioner improvements",
+    "Full model without interface loss",
 ]
 
 

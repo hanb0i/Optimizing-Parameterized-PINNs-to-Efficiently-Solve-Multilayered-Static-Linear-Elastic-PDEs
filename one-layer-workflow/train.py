@@ -109,13 +109,16 @@ def train():
     # Initialize Optimizers
     # SOAP improves conditioning for stiff, multi-term PINN losses; prefer it when Adam/AdamW stagnates.
     # precondition_frequency controls how often curvature stats are refreshed: lower is more stable, higher is cheaper.
-    optimizer_adam = soap.SOAP(
-        pinn.parameters(),
-        lr=config.LEARNING_RATE,
-        betas=(0.95, 0.95),
-        weight_decay=0.0, #was 1e-2
-        precondition_frequency=config.SOAP_PRECONDITION_FREQUENCY,
-    )
+    if os.getenv("PINN_USE_ADAMW", "0").strip().lower() in {"1", "true", "yes", "y", "on"}:
+        optimizer_adam = optim.AdamW(pinn.parameters(), lr=config.LEARNING_RATE, weight_decay=0.0)
+    else:
+        optimizer_adam = soap.SOAP(
+            pinn.parameters(),
+            lr=config.LEARNING_RATE,
+            betas=(0.95, 0.95),
+            weight_decay=0.0, #was 1e-2
+            precondition_frequency=config.SOAP_PRECONDITION_FREQUENCY,
+        )
     
     # Learning rate scheduler: reduce by 0.3 every epochs_adam//5 steps
     scheduler = optim.lr_scheduler.StepLR(optimizer_adam, step_size=max(1, epochs_adam//5), gamma=0.3)
@@ -175,6 +178,8 @@ def train():
         'impact_contact': [],
         'friction_coulomb': [],
         'friction_stick': [],
+        'interface_u': [],
+        'data': [],
         'fem_mae': [],
         'fem_max_err': [],
         'epochs': []
@@ -192,6 +197,8 @@ def train():
         'impact_contact': [],
         'friction_coulomb': [],
         'friction_stick': [],
+        'interface_u': [],
+        'data': [],
         'fem_mae': [],
         'fem_max_err': [],
         'steps': []
@@ -214,7 +221,8 @@ def train():
                 if not use_hard_bc:
                     print("Switching to soft side BCs (mask off) to lift deflection.")
         
-        if epoch % 500 == 0 and epoch > 0:
+        resample_every = int(getattr(config, "ADAPTIVE_RESAMPLE_EVERY", 500))
+        if resample_every > 0 and epoch % resample_every == 0 and epoch > 0:
             # Compute residuals for adaptive sampling
             residuals = physics.compute_residuals(pinn, training_data, device)
             training_data = data.get_data(prev_data=training_data, residuals=residuals)
@@ -237,6 +245,8 @@ def train():
         adam_history['impact_contact'].append(losses.get('impact_contact', torch.tensor(0.0)).item())
         adam_history['friction_coulomb'].append(losses.get('friction_coulomb', torch.tensor(0.0)).item())
         adam_history['friction_stick'].append(losses.get('friction_stick', torch.tensor(0.0)).item())
+        adam_history['interface_u'].append(losses.get('interface_u', torch.tensor(0.0)).item())
+        adam_history['data'].append(losses.get('data', torch.tensor(0.0)).item())
         
         if epoch % 100 == 0:
             current_time = time.time()
@@ -332,6 +342,8 @@ def train():
         lbfgs_history['impact_contact'].append(losses.get('impact_contact', torch.tensor(0.0)).item())
         lbfgs_history['friction_coulomb'].append(losses.get('friction_coulomb', torch.tensor(0.0)).item())
         lbfgs_history['friction_stick'].append(losses.get('friction_stick', torch.tensor(0.0)).item())
+        lbfgs_history['interface_u'].append(losses.get('interface_u', torch.tensor(0.0)).item())
+        lbfgs_history['data'].append(losses.get('data', torch.tensor(0.0)).item())
         
         # Compute FEM error and print
         if fem_available:
@@ -382,6 +394,19 @@ def train():
     torch.save(pinn.state_dict(), _artifact_path("pinn_model.pth"))
     loss_history = {'adam': adam_history, 'lbfgs': lbfgs_history}
     np.save(_artifact_path("loss_history.npy"), loss_history)
+    import csv
+    with open(_artifact_path("loss_history_components.csv"), "w", newline="") as f:
+        fieldnames = ["stage", "step", "total", "pde", "bc_sides", "free_top", "free_bot", "load", "energy", "impact_invariance", "impact_contact", "friction_coulomb", "friction_stick", "interface_u", "data"]
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for stage, hist in [("adam", adam_history), ("lbfgs", lbfgs_history)]:
+            n_steps = len(hist["total"])
+            for idx in range(n_steps):
+                row = {"stage": stage, "step": idx}
+                for key in fieldnames[2:]:
+                    values = hist.get(key, [])
+                    row[key] = values[idx] if idx < len(values) else 0.0
+                writer.writerow(row)
     timing = {
         "device": str(device),
         "epochs_soap": int(epochs_adam),

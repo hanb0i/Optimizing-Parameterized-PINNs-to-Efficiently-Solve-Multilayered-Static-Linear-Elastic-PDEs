@@ -237,6 +237,35 @@ def max_pct(pred: np.ndarray, ref: np.ndarray) -> float:
     return 100.0 * float(np.max(np.abs(pred - ref))) / denom if denom > 0 else 0.0
 
 
+def relative_l2_pct(pred: np.ndarray, ref: np.ndarray) -> float:
+    """Discrete integral/relative L2 error on the evaluation grid."""
+    denom = float(np.sqrt(np.sum(np.asarray(ref, dtype=float) ** 2)))
+    if denom <= 0:
+        return 0.0
+    return 100.0 * float(np.sqrt(np.sum((np.asarray(pred) - np.asarray(ref)) ** 2))) / denom
+
+
+def mean_abs_error(pred: np.ndarray, ref: np.ndarray) -> float:
+    return float(np.mean(np.abs(np.asarray(pred) - np.asarray(ref))))
+
+
+def average_displacement_metrics(pred: np.ndarray, ref: np.ndarray) -> dict[str, float]:
+    pred_avg = np.mean(np.asarray(pred), axis=tuple(range(np.asarray(pred).ndim - 1)))
+    ref_avg = np.mean(np.asarray(ref), axis=tuple(range(np.asarray(ref).ndim - 1)))
+    diff = pred_avg - ref_avg
+    ref_norm = float(np.linalg.norm(ref_avg))
+    return {
+        "avg_ux_fem": float(ref_avg[0]),
+        "avg_uy_fem": float(ref_avg[1]),
+        "avg_uz_fem": float(ref_avg[2]),
+        "avg_ux_pinn": float(pred_avg[0]),
+        "avg_uy_pinn": float(pred_avg[1]),
+        "avg_uz_pinn": float(pred_avg[2]),
+        "avg_displacement_abs_error": float(np.linalg.norm(diff)),
+        "avg_displacement_relative_error_pct": 100.0 * float(np.linalg.norm(diff)) / ref_norm if ref_norm > 0 else 0.0,
+    }
+
+
 def evaluate_case_grid(pinn, device: torch.device, case: ThreeLayerCase, ne_x: int, ne_y: int, ne_z: int) -> dict:
     x_nodes, y_nodes, z_nodes, u_fem, fem_seconds = solve_fem_case(case, ne_x, ne_y, ne_z)
     xg, yg, zg = np.meshgrid(x_nodes, y_nodes, z_nodes, indexing="ij")
@@ -256,11 +285,16 @@ def evaluate_case_grid(pinn, device: torch.device, case: ThreeLayerCase, ne_x: i
         "fem_seconds": fem_seconds,
         "pinn_eval_seconds": pinn_eval_seconds,
         "volume_mae_pct": mae_pct(u_pred, u_fem),
+        "volume_relative_l2_pct": relative_l2_pct(u_pred, u_fem),
+        "volume_mean_abs_error": mean_abs_error(u_pred, u_fem),
         "volume_max_pct": max_pct(u_pred, u_fem),
         "top_uz_mae_pct": mae_pct(top_pred, top_ref),
+        "top_uz_relative_l2_pct": relative_l2_pct(top_pred, top_ref),
+        "top_uz_mean_abs_error": mean_abs_error(top_pred, top_ref),
         "top_uz_max_pct": max_pct(top_pred, top_ref),
         "peak_fem_uz": float(np.min(top_ref)),
         "peak_pinn_uz": float(np.min(top_pred)),
+        **average_displacement_metrics(u_pred, u_fem),
         "n_eval_points": int(u_fem.shape[0] * u_fem.shape[1] * u_fem.shape[2]),
     }
 

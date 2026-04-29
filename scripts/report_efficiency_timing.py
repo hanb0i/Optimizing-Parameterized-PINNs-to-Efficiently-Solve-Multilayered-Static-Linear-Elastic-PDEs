@@ -66,10 +66,10 @@ def _supervision_accounting(ne_x: int, ne_y: int, ne_z: int) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model-path", default=None)
-    parser.add_argument("--ne-x", type=int, default=10)
-    parser.add_argument("--ne-y", type=int, default=10)
-    parser.add_argument("--ne-z", type=int, default=4)
-    parser.add_argument("--repeats", type=int, default=3)
+    parser.add_argument("--ne-x", type=int, default=16)
+    parser.add_argument("--ne-y", type=int, default=16)
+    parser.add_argument("--ne-z", type=int, default=8)
+    parser.add_argument("--repeats", type=int, default=100)
     parser.add_argument("--out-csv", default=str(GRAPHS_DATA_DIR / "efficiency_timing.csv"))
     parser.add_argument("--out-summary", default=str(GRAPHS_DATA_DIR / "efficiency_timing_summary.json"))
     args = parser.parse_args()
@@ -125,16 +125,21 @@ def main() -> None:
     fem_times = np.array([float(r["fem_seconds"]) for r in rows], dtype=float)
     pinn_times = np.array([float(r["pinn_eval_seconds"]) for r in rows], dtype=float)
     train_time = _training_time_from_artifacts(Path(model_path))
+    train_seconds = float(train_time.get("total_training_seconds", 0.0)) if isinstance(train_time, dict) else 0.0
     accounting = _supervision_accounting(args.ne_x, args.ne_y, args.ne_z)
     summary = {
         "model_path": str(model_path),
         "mesh": {"ne_x": args.ne_x, "ne_y": args.ne_y, "ne_z": args.ne_z},
         "fem_seconds_mean": float(fem_times.mean()),
         "fem_seconds_worst": float(fem_times.max()),
+        "fem_repeats_measured": int(len(fem_times)),
+        "estimated_fem_seconds_for_1e6_configs": float(fem_times.mean() * 1_000_000.0),
         "pinn_eval_seconds_mean": float(pinn_times.mean()),
         "pinn_eval_seconds_worst": float(pinn_times.max()),
+        "estimated_pinn_inference_seconds_for_1e6_configs": float(pinn_times.mean() * 1_000_000.0),
         "mean_per_case_speedup": float((fem_times / np.maximum(pinn_times, 1e-12)).mean()),
         "one_time_training_cost": train_time,
+        "estimated_pinn_total_seconds_for_1e6_configs_including_training_if_known": float(train_seconds + pinn_times.mean() * 1_000_000.0),
         "per_case_evaluation_cost_note": "PINN evaluation time excludes one-time training; FEM time is per solved case.",
         "sparse_vs_fuller_supervision": accounting,
     }

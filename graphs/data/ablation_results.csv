@@ -1,7 +1,7 @@
-variant,mean_mae,worst_mae
-Base parametric PINN,25.6109,44.6926
-+ Compliance-aware scaling,17.3562,18.7894
-+ Layerwise PDE decomposition,13.8290,25.4920
-+ Interface continuity enforcement,35.5960,69.4696
-+ Sparse FEM supervision,23.7956,48.2823
-Full framework,3.1129,4.6019
+variant,removed_component,status,mean_mae,worst_mae,mean_relative_l2,worst_relative_l2,checkpoint
+Full model,none,evaluated_existing_checkpoint,7.2618,8.3399,41.5157,56.7760,/Users/jade/PiNNs/Optimizing_Parameterized_Physics-Informed_Neural_Networks_to_Efficiently_Solve_Multilayer_Collision/three-layer-workflow/pinn_model.pth
+Full model without adaptive sampling,adaptive sampling,missing_checkpoint_requires_training,,,,,/Users/jade/PiNNs/Optimizing_Parameterized_Physics-Informed_Neural_Networks_to_Efficiently_Solve_Multilayer_Collision/graphs/data/ablation_runs/full_model_without_adaptive_sampling/pinn_model.pth
+Full model without Fourier features,Fourier features,missing_checkpoint_requires_training,,,,,/Users/jade/PiNNs/Optimizing_Parameterized_Physics-Informed_Neural_Networks_to_Efficiently_Solve_Multilayer_Collision/graphs/data/ablation_runs/full_model_without_fourier_features/pinn_model.pth
+Full model without FEM supervision,FEM supervision,missing_checkpoint_requires_training,,,,,/Users/jade/PiNNs/Optimizing_Parameterized_Physics-Informed_Neural_Networks_to_Efficiently_Solve_Multilayer_Collision/graphs/data/ablation_runs/full_model_without_fem_supervision/pinn_model.pth
+Full model without optimizer/preconditioner improvements,optimizer/preconditioner improvements,missing_checkpoint_requires_training,,,,,/Users/jade/PiNNs/Optimizing_Parameterized_Physics-Informed_Neural_Networks_to_Efficiently_Solve_Multilayer_Collision/graphs/data/ablation_runs/full_model_without_optimizer_preconditioner_improvements/pinn_model.pth
+Full model without interface loss,interface loss,missing_checkpoint_requires_training,,,,,/Users/jade/PiNNs/Optimizing_Parameterized_Physics-Informed_Neural_Networks_to_Efficiently_Solve_Multilayer_Collision/graphs/data/ablation_runs/full_model_without_interface_loss/pinn_model.pth

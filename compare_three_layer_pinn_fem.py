@@ -194,7 +194,7 @@ def _mae_pct(u_pred, u_ref):
 
 def _plot_case(case_name, output_dir, pinn, device, e1, e2, e3, t1, t2, t3):
     thickness = float(t1) + float(t2) + float(t3)
-    x_nodes, y_nodes, z_nodes, u_fea = _run_three_layer_fea(e1, e2, e3, t1, t2, t3, ne_x=10, ne_y=10, ne_z=4)
+    x_nodes, y_nodes, z_nodes, u_fea = _run_three_layer_fea(e1, e2, e3, t1, t2, t3, ne_x=16, ne_y=16, ne_z=8)
     x_nodes = np.array(x_nodes)
     y_nodes = np.array(y_nodes)
     z_nodes = np.array(z_nodes)
@@ -293,7 +293,7 @@ def _sweep(output_dir, pinn, device, e_values, t1_values, t2_values, t3_values):
                         for e3 in e_values:
                             key = (e1, e2, e3, t1, t2, t3)
                             if key not in fea_cache:
-                                fea_cache[key] = _run_three_layer_fea(e1, e2, e3, t1, t2, t3, ne_x=8, ne_y=8, ne_z=4)
+                                fea_cache[key] = _run_three_layer_fea(e1, e2, e3, t1, t2, t3, ne_x=16, ne_y=16, ne_z=8)
                             x_nodes, y_nodes, _, u_fea = fea_cache[key]
                             x_nodes = np.array(x_nodes)
                             y_nodes = np.array(y_nodes)

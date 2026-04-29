@@ -4,6 +4,19 @@ import scipy.sparse as sp
 import scipy.sparse.linalg as spla
 
 
+def _layer_ids_from_z_centers(z_centers, t_layers):
+    """Assign each element to the layer containing its centroid.
+
+    Layers are ordered bottom-to-top. Adjacent layers share mesh nodes at their
+    interface, so displacement continuity is enforced by the global DOFs. The
+    assembled equilibrium equations transmit equal-and-opposite interface
+    tractions; only material stiffness changes by layer.
+    """
+    interfaces = np.cumsum(np.array(t_layers, dtype=float))
+    layer_ids = np.searchsorted(interfaces, z_centers, side="right")
+    return np.clip(layer_ids, 0, len(t_layers) - 1)
+
+
 def _hex8_stiffness(dx, dy, dz, E, nu):
     lam = (E * nu) / ((1 + nu) * (1 - 2 * nu))
     mu = E / (2 * (1 + nu))
@@ -107,13 +120,37 @@ def _assemble_and_solve(cfg, ke_per_element):
         y_norm = (y - patch_y_min) / (patch_y_max - patch_y_min)
         return 16.0 * x_norm * (1.0 - x_norm) * y_norm * (1.0 - y_norm)
 
-    for j in range(ny):
-        if y_nodes[j] >= patch_y_min and y_nodes[j] <= patch_y_max:
-            for i in range(nx):
-                if x_nodes[i] >= patch_x_min and x_nodes[i] <= patch_x_max:
-                    mask = load_mask(x_nodes[i], y_nodes[j])
-                    n_idx = i + j * nx + k * nx * ny
-                    F[3 * n_idx + 2] -= p0 * mask * dx * dy
+    # Top traction load integrated over element faces with 2x2 Gauss quadrature.
+    # This is more mesh-consistent than assigning dx*dy loads directly to nodes
+    # and uses the same smooth patch profile as the PINN load residual.
+    gp = [-1 / np.sqrt(3), 1 / np.sqrt(3)]
+    face_det_j = dx * dy / 4.0
+    top_k = nz - 1
+    for elem_j in range(ne_y):
+        for elem_i in range(ne_x):
+            face_nodes = [
+                elem_i + elem_j * nx + top_k * nx * ny,
+                (elem_i + 1) + elem_j * nx + top_k * nx * ny,
+                (elem_i + 1) + (elem_j + 1) * nx + top_k * nx * ny,
+                elem_i + (elem_j + 1) * nx + top_k * nx * ny,
+            ]
+            x0 = elem_i * dx
+            y0 = elem_j * dy
+            for r_val in gp:
+                for s_val in gp:
+                    shape = np.array(
+                        [
+                            0.25 * (1.0 - r_val) * (1.0 - s_val),
+                            0.25 * (1.0 + r_val) * (1.0 - s_val),
+                            0.25 * (1.0 + r_val) * (1.0 + s_val),
+                            0.25 * (1.0 - r_val) * (1.0 + s_val),
+                        ]
+                    )
+                    x_q = x0 + 0.5 * (r_val + 1.0) * dx
+                    y_q = y0 + 0.5 * (s_val + 1.0) * dy
+                    traction_z = -p0 * load_mask(x_q, y_q)
+                    for node_id, n_val in zip(face_nodes, shape):
+                        F[3 * node_id + 2] += traction_z * n_val * face_det_j
 
     fixed_dofs = []
     for j in range(ny):
@@ -180,16 +217,18 @@ def solve_two_layer_fem(cfg):
     if len(e_layers) != 2 or len(t_layers) != 2:
         raise ValueError("solve_two_layer_fem expects exactly two layers.")
 
-    interface_z = float(t_layers[0])
     ke_bottom = _hex8_stiffness(dx, dy, dz, float(e_layers[0]), nu)
     ke_top = _hex8_stiffness(dx, dy, dz, float(e_layers[1]), nu)
 
     ek, _, _ = np.unravel_index(np.arange(ne_x * ne_y * ne_z), (ne_z, ne_y, ne_x))
     z_centers = (ek + 0.5) * dz
-    is_bottom = z_centers <= interface_z
+    # Element material lookup: bottom layer is index 0, top layer is index 1.
+    # Interface continuity is not imposed with duplicate constraints; it follows
+    # from shared nodes and the single global displacement vector.
+    layer_ids = _layer_ids_from_z_centers(z_centers, t_layers)
     ke_flat_bottom = ke_bottom.ravel()
     ke_flat_top = ke_top.ravel()
-    ke_per_element = np.where(is_bottom[:, None], ke_flat_bottom[None, :], ke_flat_top[None, :])
+    ke_per_element = np.where(layer_ids[:, None] == 0, ke_flat_bottom[None, :], ke_flat_top[None, :])
 
     return _assemble_and_solve(cfg, ke_per_element)
 
@@ -209,7 +248,6 @@ def solve_three_layer_fem(cfg):
     if len(e_layers) != 3 or len(t_layers) != 3:
         raise ValueError("solve_three_layer_fem expects exactly three layers.")
 
-    interfaces = np.cumsum(np.array(t_layers, dtype=float))
     ke_by_layer = np.stack(
         [_hex8_stiffness(dx, dy, dz, float(e_layers[i]), nu).ravel() for i in range(3)],
         axis=0,
@@ -217,8 +255,11 @@ def solve_three_layer_fem(cfg):
 
     ek, _, _ = np.unravel_index(np.arange(ne_x * ne_y * ne_z), (ne_z, ne_y, ne_x))
     z_centers = (ek + 0.5) * dz
-    layer_ids = np.searchsorted(interfaces, z_centers, side="right")
-    layer_ids = np.clip(layer_ids, 0, 2)
+    # Element material lookup: layers are ordered bottom-to-top as
+    # [E1, E2, E3] with interfaces at cumulative [t1, t1+t2].
+    # Shared interface nodes carry one displacement value, and the assembled
+    # stiffness matrix enforces traction balance weakly across the interface.
+    layer_ids = _layer_ids_from_z_centers(z_centers, t_layers)
     ke_per_element = ke_by_layer[layer_ids]
 
     return _assemble_and_solve(cfg, ke_per_element)

@@ -7,16 +7,17 @@ import os
 from pathlib import Path
 
 import numpy as np
+import torch
 
 from three_layer_experiment_utils import (
     GRAPHS_DATA_DIR,
+    ThreeLayerCase,
     case_grid_top_surface_metrics,
     config,
     evaluate_case_grid,
     evaluate_case_top_surface,
     ensure_output_dirs,
     load_pinn,
-    random_interior_cases,
     rows_to_csv,
     select_device,
     write_json,
@@ -25,10 +26,135 @@ from three_layer_experiment_utils import (
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CALIBRATION_PATH = REPO_ROOT / "graphs" / "data" / "three_layer_compliance_calibration.json"
-BENCHMARK_NE_X = 8
-BENCHMARK_NE_Y = 8
-BENCHMARK_NE_Z = 4
+BENCHMARK_NE_X = 16
+BENCHMARK_NE_Y = 16
+BENCHMARK_NE_Z = 8
 OBJECTIVE_CHOICES = ("peak_downward_abs", "mean_patch_abs")
+
+
+def _torch_ranges(device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
+    lows = torch.tensor(
+        [config.E_RANGE[0], config.E_RANGE[0], config.E_RANGE[0], config.T1_RANGE[0], config.T2_RANGE[0], config.T3_RANGE[0]],
+        dtype=torch.float32,
+        device=device,
+    )
+    highs = torch.tensor(
+        [config.E_RANGE[1], config.E_RANGE[1], config.E_RANGE[1], config.T1_RANGE[1], config.T2_RANGE[1], config.T3_RANGE[1]],
+        dtype=torch.float32,
+        device=device,
+    )
+    return lows, highs
+
+
+def _params_from_raw(raw: torch.Tensor, lows: torch.Tensor, highs: torch.Tensor) -> torch.Tensor:
+    return lows + (highs - lows) * torch.sigmoid(raw)
+
+
+def _differentiable_top_points(params: torch.Tensor, ne_x: int, ne_y: int, device: torch.device) -> torch.Tensor:
+    x_nodes = torch.linspace(0.0, float(config.Lx), int(ne_x) + 1, device=device)
+    y_nodes = torch.linspace(0.0, float(config.Ly), int(ne_y) + 1, device=device)
+    xg, yg = torch.meshgrid(x_nodes, y_nodes, indexing="ij")
+    e1, e2, e3, t1, t2, t3 = [params[i] for i in range(6)]
+    thickness = t1 + t2 + t3
+    n = xg.numel()
+    return torch.stack(
+        [
+            xg.reshape(-1),
+            yg.reshape(-1),
+            thickness.expand(n),
+            e1.expand(n),
+            t1.expand(n),
+            e2.expand(n),
+            t2.expand(n),
+            e3.expand(n),
+            t3.expand(n),
+            torch.full((n,), float(getattr(config, "RESTITUTION_REF", 0.5)), device=device),
+            torch.full((n,), float(getattr(config, "FRICTION_REF", 0.3)), device=device),
+            torch.full((n,), float(getattr(config, "IMPACT_VELOCITY_REF", 1.0)), device=device),
+        ],
+        dim=1,
+    )
+
+
+def _torch_u_from_v(v: torch.Tensor, pts: torch.Tensor) -> torch.Tensor:
+    e_scale = (pts[:, 3:4] + pts[:, 5:6] + pts[:, 7:8]) / 3.0
+    t_scale = pts[:, 4:5] + pts[:, 6:7] + pts[:, 8:9]
+    e_pow = float(getattr(config, "E_COMPLIANCE_POWER", 1.0))
+    alpha = float(getattr(config, "THICKNESS_COMPLIANCE_ALPHA", 0.0))
+    scale = float(getattr(config, "DISPLACEMENT_COMPLIANCE_SCALE", 1.0))
+    h_ref = float(getattr(config, "H", 1.0))
+    return scale * v / (e_scale ** e_pow) * (h_ref / torch.clamp(t_scale, min=1e-8)) ** alpha
+
+
+def _differentiable_design_objective(pinn, params: torch.Tensor, ne_x: int, ne_y: int, device: torch.device) -> torch.Tensor:
+    """Weighted objective for nontrivial layered design.
+
+    The first term controls transmitted/average load-patch deflection. The
+    second term penalizes material usage, preventing the optimum from being
+    "make all layers as stiff and thick as possible." The third term softly
+    discourages concentrating deformation in only one layer by penalizing large
+    stiffness contrast.
+    """
+    pts = _differentiable_top_points(params, ne_x, ne_y, device)
+    v = pinn(pts)
+    u = _torch_u_from_v(v, pts)
+    x = pts[:, 0]
+    y = pts[:, 1]
+    patch = (
+        (x >= float(config.LOAD_PATCH_X[0]))
+        & (x <= float(config.LOAD_PATCH_X[1]))
+        & (y >= float(config.LOAD_PATCH_Y[0]))
+        & (y <= float(config.LOAD_PATCH_Y[1]))
+    )
+    uz_patch = u[patch, 2] if torch.any(patch) else u[:, 2]
+    mean_patch_abs = torch.mean(torch.abs(uz_patch))
+    e = params[:3]
+    t = params[3:]
+    material_cost = torch.sum(e * t) / (3.0 * float(config.E_RANGE[1]) * float(config.T3_RANGE[1]))
+    contrast_penalty = torch.var(torch.log(torch.clamp(e, min=1e-8)))
+    constraint_penalty = torch.relu(torch.min(e) - 4.999) ** 2
+    return mean_patch_abs + 0.03 * material_cost + 0.005 * contrast_penalty + 10.0 * constraint_penalty
+
+
+def _gradient_optimize_designs(pinn, device: torch.device, n_starts: int, steps: int, lr: float, ne_x: int, ne_y: int, seed: int) -> list[dict]:
+    torch.manual_seed(seed)
+    rng = np.random.default_rng(seed)
+    lows, highs = _torch_ranges(device)
+    results = []
+    for start_idx in range(n_starts):
+        initial = torch.tensor(rng.uniform(lows.cpu().numpy(), highs.cpu().numpy()), dtype=torch.float32, device=device)
+        raw = torch.logit(torch.clamp((initial - lows) / (highs - lows), 1e-4, 1.0 - 1e-4)).detach().clone().requires_grad_(True)
+        opt = torch.optim.Adam([raw], lr=lr)
+        best = None
+        for step in range(steps):
+            opt.zero_grad()
+            params = _params_from_raw(raw, lows, highs)
+            objective = _differentiable_design_objective(pinn, params, ne_x, ne_y, device)
+            objective.backward()
+            opt.step()
+            with torch.no_grad():
+                params_now = _params_from_raw(raw, lows, highs).detach().cpu().numpy()
+                objective_now = float(objective.detach().cpu())
+                feasible = bool(np.min(params_now[:3]) < 5.0)
+                if best is None or objective_now < best["objective"]:
+                    best = {"objective": objective_now, "params": params_now.copy(), "step": step, "feasible": feasible}
+        assert best is not None
+        e1, e2, e3, t1, t2, t3 = [float(v) for v in best["params"]]
+        case = ThreeLayerCase(
+            f"gradient_start_{start_idx:03d}",
+            e1,
+            e2,
+            e3,
+            t1,
+            t2,
+            t3,
+        )
+        eval_result = evaluate_case_top_surface(pinn, device, case, ne_x, ne_y)
+        eval_result["optimizer_objective"] = best["objective"]
+        eval_result["optimizer_step"] = best["step"]
+        eval_result["constraint_min_E_lt_5"] = best["feasible"]
+        results.append(eval_result)
+    return results
 
 
 def _objective_value(result: dict, objective: str) -> float:
@@ -52,6 +178,9 @@ def _candidate_row(result: dict, rank: int | None = None) -> dict:
         "mean_patch_abs": f"{result['mean_patch_abs']:.10g}",
         "pinn_eval_seconds": f"{result['pinn_eval_seconds']:.6f}",
         "n_eval_points": str(result["n_eval_points"]),
+        "optimizer_objective": f"{float(result.get('optimizer_objective', np.nan)):.10g}",
+        "optimizer_step": str(result.get("optimizer_step", "")),
+        "constraint_min_E_lt_5": str(result.get("constraint_min_E_lt_5", "")),
     }
     if rank is not None:
         row["rank"] = str(rank)
@@ -97,7 +226,9 @@ def main() -> None:
     parser.add_argument("--model-path", default=None)
     parser.add_argument("--calibration-json", default=None)
     parser.add_argument("--objective", choices=OBJECTIVE_CHOICES, default="mean_patch_abs")
-    parser.add_argument("--n-candidates", type=int, default=500)
+    parser.add_argument("--n-candidates", type=int, default=24, help="Number of gradient-descent starts")
+    parser.add_argument("--optimization-steps", type=int, default=250)
+    parser.add_argument("--optimization-lr", type=float, default=0.05)
     parser.add_argument("--top-k", type=int, default=5)
     parser.add_argument("--seed", type=int, default=20260423)
     parser.add_argument("--surrogate-ne-x", type=int, default=20)
@@ -122,16 +253,23 @@ def main() -> None:
     device = select_device()
     pinn, model_path = load_pinn(device, args.model_path)
 
-    candidate_results = []
-    print(f"Screening {args.n_candidates} random interior designs with the PINN surrogate...")
-    for idx, case in enumerate(random_interior_cases(args.n_candidates, args.seed), start=1):
-        result = evaluate_case_top_surface(pinn, device, case, args.surrogate_ne_x, args.surrogate_ne_y)
-        candidate_results.append(result)
-        if idx == 1 or idx % 50 == 0 or idx == args.n_candidates:
-            print(
-                f"  {idx:4d}/{args.n_candidates}: best {args.objective} so far = "
-                f"{min(_objective_value(r, args.objective) for r in candidate_results):.6g}"
-            )
+    print(f"Running {args.n_candidates} multi-start gradient optimizations with the PINN surrogate...")
+    candidate_results = _gradient_optimize_designs(
+        pinn,
+        device,
+        n_starts=args.n_candidates,
+        steps=args.optimization_steps,
+        lr=args.optimization_lr,
+        ne_x=args.surrogate_ne_x,
+        ne_y=args.surrogate_ne_y,
+        seed=args.seed,
+    )
+    for idx, result in enumerate(candidate_results, start=1):
+        print(
+            f"  start {idx:3d}: objective={result['optimizer_objective']:.6g}, "
+            f"{args.objective}={_objective_value(result, args.objective):.6g}, "
+            f"min(E)={min(result['case'].e):.3g}"
+        )
 
     candidate_results.sort(key=lambda r: (_objective_value(r, args.objective), r["peak_downward_abs"], r["mean_patch_abs"]))
     top_k = candidate_results[: max(1, min(args.top_k, len(candidate_results)))]
@@ -154,6 +292,9 @@ def main() -> None:
             "mean_patch_abs",
             "pinn_eval_seconds",
             "n_eval_points",
+            "optimizer_objective",
+            "optimizer_step",
+            "constraint_min_E_lt_5",
         ],
         candidate_rows,
     )
@@ -177,6 +318,9 @@ def main() -> None:
             "mean_patch_abs",
             "pinn_eval_seconds",
             "n_eval_points",
+            "optimizer_objective",
+            "optimizer_step",
+            "constraint_min_E_lt_5",
         ],
         topk_rows,
     )
@@ -274,13 +418,21 @@ def main() -> None:
         "top_k": int(len(top_k)),
         "calibration_json": calibration_path,
         "benchmark_protocol": "random_interior_generalization_style_confirmation",
+        "optimization_protocol": {
+            "method": "multi_start_adam_gradient_descent_on_pinn_surrogate",
+            "n_starts": int(args.n_candidates),
+            "steps_per_start": int(args.optimization_steps),
+            "learning_rate": float(args.optimization_lr),
+            "constraint": "at least one layer Young's modulus must be less than 5",
+        },
         "objective": {
-            "name": args.objective,
+            "name": "weighted_mean_patch_deflection_material_cost_and_contrast",
             "description": (
-                "Minimize the absolute value of the most negative top-surface u_z predicted by the surrogate."
-                if args.objective == "peak_downward_abs"
-                else "Minimize the mean absolute top-surface deflection over the load patch predicted by the surrogate."
+                "Minimize mean absolute load-patch deflection plus small material-cost and stiffness-contrast penalties. "
+                "This is more meaningful than minimizing max displacement alone because it penalizes transmitted response "
+                "over the loaded area while discouraging the trivial all-stiff/all-thick solution."
             ),
+            "reported_surrogate_metric": args.objective,
         },
         "surrogate_grid": {"ne_x": int(args.surrogate_ne_x), "ne_y": int(args.surrogate_ne_y)},
         "fem_confirmation_mesh": {"ne_x": int(args.fem_ne_x), "ne_y": int(args.fem_ne_y), "ne_z": int(args.fem_ne_z)},

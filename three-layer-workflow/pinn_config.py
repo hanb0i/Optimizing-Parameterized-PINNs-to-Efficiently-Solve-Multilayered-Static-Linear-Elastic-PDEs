@@ -65,10 +65,12 @@ Lame_Params = [get_lame_params(e, n) for e, n in zip(E_vals, nu_vals)]
 # --- Loading ---
 p0 = 1.0 # Load magnitude
 
-# --- FEA supervision mesh (lower = faster) ---
-FEM_NE_X = 10
-FEM_NE_Y = 10
-FEM_NE_Z = 4
+# --- FEA supervision mesh ---
+# Default to the refined benchmark mesh so supervised training and reported
+# FEM comparisons use the same load integration and comparable mesh quality.
+FEM_NE_X = 16
+FEM_NE_Y = 16
+FEM_NE_Z = 8
 
 # --- Unit-consistent loss scaling ---
 # div(sigma) has units of stress/length; scale by a characteristic length.
@@ -202,6 +204,7 @@ FOURIER_SCALE = 1.0 # Standard deviation for frequency sampling
 
 # Hybrid / Parametric Training Data
 N_DATA_POINTS = _env_int("PINN_N_DATA_POINTS", 36000)
+ADAPTIVE_RESAMPLE_EVERY = _env_int("PINN_ADAPTIVE_RESAMPLE_EVERY", 500)
 DATA_E_VALUES = [1.0, 10.0]
 DATA_T1_VALUES = [0.02, 0.10]
 DATA_T2_VALUES = [0.02, 0.10]
