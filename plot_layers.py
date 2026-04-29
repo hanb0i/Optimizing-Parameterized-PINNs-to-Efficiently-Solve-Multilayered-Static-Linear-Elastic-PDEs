@@ -67,6 +67,11 @@ ax1.annotate(r"$E_1$, $t_1 = H = 0.1$", xy=pt_layer, xytext=(pt_layer[0] + 2.5, 
 ax1.annotate("Clamped\n" + r"$\mathbf{u} = \mathbf{0}$", xy=pt_clamp, xytext=(pt_clamp[0] - 2.5, pt_clamp[1] + 1.5),
              arrowprops=dict(arrowstyle="->", color='#1B4F72', lw=0.8), color='#1B4F72', fontweight='bold', ha='right', va='center', fontsize=8)
 
+# Parameter label under Panel A
+ax1.text(0, -6, r"$\boldsymbol{\mu} = \{E_1, t_1\}$",
+         fontsize=9, fontweight='bold', ha='center', color='#1A3C5A',
+         bbox=dict(boxstyle='round,pad=0.3', facecolor='#E8F0F8', edgecolor='#1A3C5A', lw=0.8))
+
 # PANEL B
 format_canvas(ax2, r"(b) Three-layer configuration ($N_L = 3$)")
 draw_axes(ax2)
@@ -89,6 +94,11 @@ ax2.annotate(r"Layer 3: $E_3 = 5.0$" + "\n" + r"$t_3 = 0.02$ (aluminum-like)", x
              arrowprops=dict(arrowstyle="->", color='#1A3C5A', lw=0.8), color='#1A3C5A', fontweight='bold', va='center', fontsize=7.5)
 ax2.annotate("Clamped\n" + r"$\mathbf{u} = \mathbf{0}$", xy=pt_clamp, xytext=(pt_clamp[0] - 2.5, pt_clamp[1] + 1.5),
              arrowprops=dict(arrowstyle="->", color='#1B4F72', lw=0.8), color='#1B4F72', fontweight='bold', ha='right', va='center', fontsize=8)
+
+# Parameter label under Panel B
+ax2.text(0, -6, r"$\boldsymbol{\mu} = \{E_1, t_1, E_2, t_2, E_3, t_3\}$",
+         fontsize=9, fontweight='bold', ha='center', color='#1A3C5A',
+         bbox=dict(boxstyle='round,pad=0.3', facecolor='#E8F0F8', edgecolor='#1A3C5A', lw=0.8))
 
 # Constructing the LaTeX-integrated legend string
 legend_text = (
