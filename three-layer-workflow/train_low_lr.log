@@ -1,0 +1,30 @@
+Using device: mps
+Using p0 = 1.0
+MultiLayerPINN(
+  (layer): LayerNet(
+    (net): Sequential(
+      (0): Linear(in_features=21, out_features=64, bias=True)
+      (1): Tanh()
+      (2): Linear(in_features=64, out_features=64, bias=True)
+      (3): Tanh()
+      (4): Linear(in_features=64, out_features=64, bias=True)
+      (5): Tanh()
+      (6): Linear(in_features=64, out_features=64, bias=True)
+      (7): Tanh()
+      (8): Linear(in_features=64, out_features=3, bias=True)
+    )
+  )
+)
+Warm-start loaded from /Users/hanbosong/GitHub/Basic-PiNN-Model-For-Three-Layered-Collision/three-layer-workflow/pinn_model.pth
+Loading FEM solution for comparison...
+FEM data loaded: (31, 31, 11)
+Loading hybrid supervision data (N=36000, E=[1.0, 10.0])...
+  Loaded cached FEM supervision: /Users/hanbosong/GitHub/Basic-PiNN-Model-For-Three-Layered-Collision/three-layer-workflow/supervision_cache/fem_supervision_34741efd821c827a.pt (36000 points)
+Attached 36000 supervision points to training data.
+Starting SOAP Pretraining...
+Epoch 0: Total Loss: 1.145877 | PDE: 0.006375 | BC_sides: 0.000059 | Free_top: 0.006857 | Free_bot: 0.012340 | Load: 0.021334 | Energy: -0.003725 | ImpactC: 0.000000 | FricC: 0.000000 | FricS: 0.000000 | Interface: 0.000445 | ImpactInv: 0.000000 | LR: 5.00e-04 | FEM MAE: 0.173813 | Time: 0.7139s
+SOAP Pretraining Complete. Total Time: 26.22s
+Starting L-BFGS Fine-Tuning...
+Running 0 L-BFGS outer steps.
+Using fixed collocation set during L-BFGS for stability.
+Model saved to /Users/hanbosong/GitHub/Basic-PiNN-Model-For-Three-Layered-Collision/three-layer-workflow/pinn_model.pth

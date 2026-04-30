@@ -1,5 +1,5 @@
 {
-  "model_path": "/Users/hanbosong/GitHub/Basic-PiNN-Model-For-Three-Layered-Collision/three-layer-workflow/pinn_model.pth",
+  "model_path": "three-layer-workflow/pinn_model.pth",
   "seed": 20260415,
   "n_cases": 8,
   "mesh": {
@@ -7,10 +7,20 @@
     "ne_y": 8,
     "ne_z": 4
   },
-  "top_uz_mae_pct_mean": 8.51206825,
-  "top_uz_mae_pct_worst": 11.350656,
-  "volume_mae_pct_mean": 3.709244,
-  "volume_mae_pct_worst": 4.986112,
+  "top_uz_mae_pct_mean": 8.053828375,
+  "top_uz_mae_pct_std": 2.5695471900072655,
+  "top_uz_mae_pct_worst": 11.032711,
+  "top_uz_relative_l2_pct_mean": 42.5532005,
+  "top_uz_relative_l2_pct_std": 14.513279901222589,
+  "top_uz_relative_l2_pct_worst": 59.605358,
+  "volume_mae_pct_mean": 3.53990575,
+  "volume_mae_pct_std": 1.0872903619768215,
+  "volume_mae_pct_worst": 4.798044,
+  "volume_relative_l2_pct_mean": 43.591626375,
+  "volume_relative_l2_pct_std": 15.185950481909387,
+  "volume_relative_l2_pct_worst": 62.161815,
+  "avg_displacement_relative_error_pct_mean": 42.812331125,
+  "avg_displacement_relative_error_pct_worst": 63.543107,
   "all_top_cases_below_5_pct": false,
   "all_volume_cases_below_5_pct": true
 }
